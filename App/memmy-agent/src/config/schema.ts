@@ -818,6 +818,43 @@ export class ExecToolConfig extends Base {
   }
 }
 
+export type SandboxPolicyMode = "disabled" | "enforce";
+export type SandboxWorkspaceProfile = "workspace-compatible" | "workspace-confidential";
+
+export class SandboxPolicyConfig extends Base {
+  mode: SandboxPolicyMode = "disabled";
+  interactiveProfile: SandboxWorkspaceProfile = "workspace-compatible";
+  backgroundProfile: SandboxWorkspaceProfile = "workspace-confidential";
+
+  constructor(init: Dict = {}) {
+    super();
+    const value = assertPlainObject("tools.sandboxPolicy", init);
+    this.mode = assertOneOf(
+      "tools.sandboxPolicy.mode",
+      pick(value, ["mode"], this.mode),
+      ["disabled", "enforce"] as const,
+    );
+    this.interactiveProfile = assertOneOf(
+      "tools.sandboxPolicy.interactiveProfile",
+      pick(value, ["interactiveProfile"], this.interactiveProfile),
+      ["workspace-compatible", "workspace-confidential"] as const,
+    );
+    this.backgroundProfile = assertOneOf(
+      "tools.sandboxPolicy.backgroundProfile",
+      pick(value, ["backgroundProfile"], this.backgroundProfile),
+      ["workspace-compatible", "workspace-confidential"] as const,
+    );
+  }
+
+  override toObject(): Dict {
+    return {
+      mode: this.mode,
+      interactiveProfile: this.interactiveProfile,
+      backgroundProfile: this.backgroundProfile,
+    };
+  }
+}
+
 export function isValidImageGenerationMaxImagesPerTurn(value: unknown): value is number | null {
   return value === null || (typeof value === "number" && Number.isSafeInteger(value) && value >= 1);
 }
@@ -931,6 +968,7 @@ export class ToolsConfig extends Base {
   web: WebToolsConfig;
   browser: BrowserToolsConfig;
   exec: ExecToolConfig;
+  sandboxPolicy: SandboxPolicyConfig;
   webSearch: WebSearchConfig;
   webFetch: WebFetchConfig;
   imageGeneration: ImageGenerationToolConfig;
@@ -956,6 +994,10 @@ export class ToolsConfig extends Base {
         : new BrowserToolsConfig(pick(init, ["browser"], {}));
     this.exec =
       init.exec instanceof ExecToolConfig ? init.exec : new ExecToolConfig(init.exec ?? {});
+    this.sandboxPolicy =
+      init.sandboxPolicy instanceof SandboxPolicyConfig
+        ? init.sandboxPolicy
+        : new SandboxPolicyConfig(pick(init, ["sandboxPolicy"], {}));
     this.webSearch = init.webSearch instanceof WebSearchConfig ? init.webSearch : this.web.search;
     this.webFetch = init.webFetch instanceof WebFetchConfig ? init.webFetch : this.web.fetch;
     this.imageGeneration =
@@ -984,6 +1026,7 @@ export class ToolsConfig extends Base {
       web: this.web.toObject(),
       browser: this.browser.toObject(),
       exec: this.exec.toObject(),
+      sandboxPolicy: this.sandboxPolicy.toObject(),
       webSearch: this.webSearch.toObject(),
       webFetch: this.webFetch.toObject(),
       imageGeneration: this.imageGeneration.toObject(),

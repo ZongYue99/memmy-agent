@@ -18,6 +18,7 @@ import {
   MCPServerConfig,
   ModelPresetConfig,
   SessionDagConfig,
+  SandboxPolicyConfig,
 } from "../../src/config/schema.js";
 
 const roots: string[] = [];
@@ -38,6 +39,38 @@ function configFile(contents = ""): string {
 }
 
 describe("config schema validation", () => {
+  it("defines a migration-safe sandbox policy switch with a strict profile", () => {
+    expect(new SandboxPolicyConfig().toObject()).toEqual({
+      mode: "disabled",
+      interactiveProfile: "workspace-compatible",
+      backgroundProfile: "workspace-confidential",
+    });
+    const configured = new Config({
+      tools: {
+        sandboxPolicy: {
+          mode: "enforce",
+          interactiveProfile: "workspace-confidential",
+          backgroundProfile: "workspace-compatible",
+        },
+      },
+    });
+    expect(configured.toObject().tools.sandboxPolicy).toEqual({
+      mode: "enforce",
+      interactiveProfile: "workspace-confidential",
+      backgroundProfile: "workspace-compatible",
+    });
+  });
+
+  it.each([
+    [null, /tools\.sandboxPolicy must be an object/],
+    [[], /tools\.sandboxPolicy must be an object/],
+    [{ mode: "audit" }, /tools\.sandboxPolicy\.mode/],
+    [{ interactiveProfile: "host-readable" }, /tools\.sandboxPolicy\.interactiveProfile/],
+    [{ backgroundProfile: "host-readable" }, /tools\.sandboxPolicy\.backgroundProfile/],
+  ])("rejects invalid sandbox policy config %#", (sandboxPolicy, error) => {
+    expect(() => new Config({ tools: { sandboxPolicy } } as any)).toThrow(error);
+  });
+
   it("serializes only providers with explicit connection settings", () => {
     const emptyProviders = new Config().toObject().providers;
     expect(emptyProviders).toEqual({});

@@ -425,6 +425,38 @@ describe("AgentLoop direct processing", () => {
     expect(seenSpec.goalContinueMessage).toBeUndefined();
   });
 
+  it("attaches the local sandbox guard only when policy enforcement is enabled", async () => {
+    const captureGuard = async (mode: "disabled" | "enforce") => {
+      const agent = loop(provider(["unused"]), {
+        config: new Config({
+          memmyMemory: { enabled: false },
+          tools: { sandboxPolicy: { mode } },
+        }),
+      });
+      let guard: any = undefined;
+      agent.runner.run = vi.fn(async (spec: any) => {
+        guard = spec.toolCallGuard;
+        return new AgentRunResult({
+          finalContent: "done",
+          messages: [...spec.messages, { role: "assistant", content: "done" }],
+          stopReason: "completed",
+        });
+      });
+
+      await agent.processDirect("continue", { sessionKey: `cli:${mode}` });
+      return guard;
+    };
+
+    expect(await captureGuard("disabled")).toBeNull();
+    const enforcingGuard = await captureGuard("enforce");
+    expect(enforcingGuard).toBeDefined();
+    await expect(enforcingGuard.authorize({
+      callId: "read-1",
+      toolName: "read_file",
+      arguments: { path: "README.md" },
+    })).resolves.toEqual({ type: "allow" });
+  });
+
   it("extracts document media before building prompt and keeps image media for multimodal content", async () => {
     const p = provider(["read it"]);
     const root = workspace();

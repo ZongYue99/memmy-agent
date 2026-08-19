@@ -87,6 +87,7 @@ import { LLMRuntime } from "../../utils/llm-runtime.js";
 import { withProgressCapabilities } from "../../utils/progress-events.js";
 import { EMPTY_FINAL_RESPONSE_MESSAGE } from "../../utils/runtime.js";
 import { AgentRunner, AgentRunSpec, type AgentInternalTurnContext } from "./runner.js";
+import { createLocalToolCallGuard, runtimeEntrypointSource } from "./sandbox/index.js";
 import {
   GoalRuntime,
   GoalRuntimeError,
@@ -3355,6 +3356,15 @@ export class AgentLoop {
         internalTurnContext,
         actualModelContext: modelSelection ? persistedModelSelection(modelSelection) : null,
         onMaxFinalizationStarting,
+        toolCallGuard: this.config.tools.sandboxPolicy.mode === "enforce"
+          ? createLocalToolCallGuard({
+              workspaceRoot: sessionWorkspace,
+              interactiveProfile: this.config.tools.sandboxPolicy.interactiveProfile,
+              backgroundProfile: this.config.tools.sandboxPolicy.backgroundProfile,
+              source: runtimeEntrypointSource(channel, internalTurnContext),
+              projectId: sessionWorkspace,
+            })
+          : null,
       }),
     );
     const rawUsage = result.usage ?? result.response?.usage;
