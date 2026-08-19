@@ -23,8 +23,3 @@ export function attachPolicyHash(profile: UnhashedPermissionProfile): Permission
     policyHash: stablePolicyHash(profile),
   }) as PermissionProfile;
 }
-
-export function verifyPolicyHash(profile: PermissionProfile): boolean {
-  const { policyHash, ...unhashed } = profile;
-  return policyHash === stablePolicyHash(unhashed);
-}

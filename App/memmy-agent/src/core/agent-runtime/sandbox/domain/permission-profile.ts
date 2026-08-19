@@ -16,7 +16,7 @@ type ProfileMetadata = Readonly<{
   policyHash: string;
 }>;
 
-export type ManagedPermissionProfile = ProfileMetadata &
+export type PermissionProfile = ProfileMetadata &
   Readonly<{
     type: "managed";
     filesystem:
@@ -27,29 +27,4 @@ export type ManagedPermissionProfile = ProfileMetadata &
     environment: EnvironmentCapability;
   }>;
 
-export type ExternalPermissionProfile = ProfileMetadata &
-  Readonly<{
-    type: "external";
-    executorId: string;
-    requiredAttestation: Readonly<{
-      protocolVersion: number;
-      capabilityHash: string;
-    }>;
-    network: NetworkCapability;
-  }>;
-
-export type DisabledPermissionProfile = ProfileMetadata &
-  Readonly<{
-    type: "disabled";
-    reason: "user-selected-danger-full-access";
-  }>;
-
-export type PermissionProfile =
-  | ManagedPermissionProfile
-  | ExternalPermissionProfile
-  | DisabledPermissionProfile;
-
-export type UnhashedPermissionProfile =
-  | Omit<ManagedPermissionProfile, "policyHash">
-  | Omit<ExternalPermissionProfile, "policyHash">
-  | Omit<DisabledPermissionProfile, "policyHash">;
+export type UnhashedPermissionProfile = Omit<PermissionProfile, "policyHash">;

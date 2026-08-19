@@ -1,8 +1,8 @@
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { CapabilitySet } from "../../../../src/core/agent-runtime/sandbox/domain/capability.js";
-import { verifyPolicyHash } from "../../../../src/core/agent-runtime/sandbox/policy/policy-hash.js";
-import { PolicyResolver } from "../../../../src/core/agent-runtime/sandbox/policy/policy-resolver.js";
+import { stablePolicyHash } from "../../../../src/core/agent-runtime/sandbox/policy/policy-hash.js";
+import { resolvePolicy } from "../../../../src/core/agent-runtime/sandbox/policy/policy-resolver.js";
 
 function capabilities(overrides: Partial<CapabilitySet> = {}): CapabilitySet {
   return {
@@ -41,7 +41,7 @@ const entrypoint = {
 describe("PolicyResolver", () => {
   it("intersects caps, constrains the base grant, and compiles a hashed profile", () => {
     const workspace = path.resolve("/workspace/project");
-    const result = new PolicyResolver().resolve({
+    const result = resolvePolicy({
       caps: [
         capabilities(),
         capabilities({
@@ -87,12 +87,13 @@ describe("PolicyResolver", () => {
       filesystem: { kind: "restricted" },
     });
     expect(result.compiledPolicyHash).toBe(result.permissionProfile.policyHash);
-    expect(verifyPolicyHash(result.permissionProfile)).toBe(true);
+    const { policyHash, ...unhashedProfile } = result.permissionProfile;
+    expect(policyHash).toBe(stablePolicyHash(unhashedProfile));
   });
 
   it("rejects an empty cap chain", () => {
     expect(() =>
-      new PolicyResolver().resolve({
+      resolvePolicy({
         caps: [],
         baseGrants: [capabilities()],
         entrypoint,

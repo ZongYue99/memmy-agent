@@ -6,17 +6,9 @@ const context = { cwd: "/workspace", workspaceRoots: ["/workspace"] };
 describe("CapabilityRegistry", () => {
   it("resolves access from normalized tool parameters", () => {
     const registry = new CapabilityRegistry();
-    registry.register("write_file", {
-      filesystem: "write",
-      process: "none",
-      network: "none",
-      externalSideEffect: "none",
-      persistence: "none",
-      sensitiveData: "agent-source",
-      resolveAccess: (params) => [
-        { kind: "filesystem", access: "write", path: String(params.path) },
-      ],
-    });
+    registry.register("write_file", (params) => [
+      { kind: "filesystem", access: "write", path: String(params.path) },
+    ]);
 
     expect(registry.resolve("write_file", { path: "/workspace/index.ts" }, context)).toEqual([
       { kind: "filesystem", access: "write", path: "/workspace/index.ts" },

@@ -1,9 +1,5 @@
 import type { CapabilitySet, ResolvedAccessSet } from "../domain/capability.js";
-import type {
-  FileSystemEntry,
-  ManagedPermissionProfile,
-  PermissionProfile,
-} from "../domain/permission-profile.js";
+import type { FileSystemEntry, PermissionProfile } from "../domain/permission-profile.js";
 import type { EntrypointContext, WorkspaceProfile } from "./entrypoint-classifier.js";
 import { intersectCapabilitySets, normalizeCapabilitySet } from "./policy-cap.js";
 import { attachPolicyHash, stablePolicyHash } from "./policy-hash.js";
@@ -63,7 +59,7 @@ function fileSystemEntries(capability: CapabilitySet): FileSystemEntry[] {
   });
 }
 
-function compileManagedProfile(capability: CapabilitySet): ManagedPermissionProfile {
+function compileManagedProfile(capability: CapabilitySet): PermissionProfile {
   return attachPolicyHash({
     version: 1,
     type: "managed",
@@ -71,31 +67,29 @@ function compileManagedProfile(capability: CapabilitySet): ManagedPermissionProf
     network: capability.network,
     process: capability.process,
     environment: capability.environment,
-  }) as ManagedPermissionProfile;
+  });
 }
 
-export class PolicyResolver {
-  resolve(input: ResolvePolicyInput): EffectiveAuthorization {
-    const policyCap = intersectAll(input.caps, "caps");
-    const requestedBaseGrant = intersectAll(input.baseGrants, "baseGrants");
-    const baseGrant = intersectCapabilitySets(policyCap, requestedBaseGrant);
-    const permissionProfile = compileManagedProfile(baseGrant);
-    const initialPolicyHash = stablePolicyHash({
-      entrypoint: input.entrypoint,
-      workspaceProfile: input.workspaceProfile,
-      policyCap,
-      baseGrant,
-    });
-    return Object.freeze({
-      entrypoint: input.entrypoint,
-      workspaceProfile: input.workspaceProfile,
-      policyCap,
-      baseGrant,
-      permissionProfile,
-      requestedCapabilities: Object.freeze([...(input.requestedCapabilities ?? [])]),
-      approvalMode: input.approvalMode,
-      initialPolicyHash,
-      compiledPolicyHash: permissionProfile.policyHash,
-    });
-  }
+export function resolvePolicy(input: ResolvePolicyInput): EffectiveAuthorization {
+  const policyCap = intersectAll(input.caps, "caps");
+  const requestedBaseGrant = intersectAll(input.baseGrants, "baseGrants");
+  const baseGrant = intersectCapabilitySets(policyCap, requestedBaseGrant);
+  const permissionProfile = compileManagedProfile(baseGrant);
+  const initialPolicyHash = stablePolicyHash({
+    entrypoint: input.entrypoint,
+    workspaceProfile: input.workspaceProfile,
+    policyCap,
+    baseGrant,
+  });
+  return {
+    entrypoint: input.entrypoint,
+    workspaceProfile: input.workspaceProfile,
+    policyCap,
+    baseGrant,
+    permissionProfile,
+    requestedCapabilities: input.requestedCapabilities ?? [],
+    approvalMode: input.approvalMode,
+    initialPolicyHash,
+    compiledPolicyHash: permissionProfile.policyHash,
+  };
 }

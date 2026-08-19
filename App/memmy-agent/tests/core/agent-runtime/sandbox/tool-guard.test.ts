@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { CapabilitySet } from "../../../../src/core/agent-runtime/sandbox/domain/capability.js";
-import { ToolGuard } from "../../../../src/core/agent-runtime/sandbox/guard/tool-guard.js";
-import { PolicyResolver } from "../../../../src/core/agent-runtime/sandbox/policy/policy-resolver.js";
+import { decideToolAccess } from "../../../../src/core/agent-runtime/sandbox/guard/tool-guard.js";
+import { resolvePolicy } from "../../../../src/core/agent-runtime/sandbox/policy/policy-resolver.js";
 
 function capabilities(overrides: Partial<CapabilitySet> = {}): CapabilitySet {
   return {
@@ -22,14 +22,14 @@ function capabilities(overrides: Partial<CapabilitySet> = {}): CapabilitySet {
 }
 
 function authorization(
-  requestedCapabilities: Parameters<PolicyResolver["resolve"]>[0]["requestedCapabilities"],
+  requestedCapabilities: Parameters<typeof resolvePolicy>[0]["requestedCapabilities"],
   overrides: Readonly<{
     policyCap?: CapabilitySet;
     baseGrant?: CapabilitySet;
     approvalChannel?: "desktop" | "none";
   }> = {},
 ) {
-  return new PolicyResolver().resolve({
+  return resolvePolicy({
     caps: [overrides.policyCap ?? capabilities()],
     baseGrants: [overrides.baseGrant ?? capabilities()],
     requestedCapabilities,
@@ -52,7 +52,7 @@ describe("ToolGuard", () => {
       { kind: "process", interactive: false, command: "npm test" },
     ]);
 
-    expect(new ToolGuard().decide(auth)).toEqual({ kind: "execute", authorization: auth });
+    expect(decideToolAccess(auth)).toEqual({ kind: "execute", authorization: auth });
   });
 
   it("asks only when the capability is inside policyCap", () => {
@@ -61,7 +61,7 @@ describe("ToolGuard", () => {
       targets: [{ host: "api.example.com", protocols: ["https" as const], ports: [443] }],
     };
     expect(
-      new ToolGuard().decide(
+      decideToolAccess(
         authorization(
           [{ kind: "network", host: "api.example.com", protocol: "https", port: 443 }],
           { policyCap: capabilities({ network }), baseGrant: capabilities() },
@@ -78,7 +78,7 @@ describe("ToolGuard", () => {
 
   it("denies capabilities outside policyCap", () => {
     expect(
-      new ToolGuard().decide(
+      decideToolAccess(
         authorization([{ kind: "filesystem", access: "read", path: "/etc/passwd" }]),
       ),
     ).toEqual({
@@ -94,7 +94,7 @@ describe("ToolGuard", () => {
       targets: [{ host: "api.example.com", protocols: ["https" as const], ports: [443] }],
     };
     expect(
-      new ToolGuard().decide(
+      decideToolAccess(
         authorization(
           [{ kind: "network", host: "api.example.com", protocol: "https", port: 443 }],
           {
@@ -115,7 +115,7 @@ describe("ToolGuard", () => {
 
   it("fails closed for unknown capabilities", () => {
     expect(
-      new ToolGuard().decide(authorization([{ kind: "unknown", name: "unregistered-tool" }])),
+      decideToolAccess(authorization([{ kind: "unknown", name: "unregistered-tool" }])),
     ).toEqual({
       kind: "deny",
       reason: "unknown-capability",

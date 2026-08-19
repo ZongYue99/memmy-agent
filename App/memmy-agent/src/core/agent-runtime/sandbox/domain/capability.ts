@@ -1,17 +1,14 @@
 export type CanonicalPath = string;
 
-export const RESOURCE_KINDS = [
-  "browser",
-  "stdio-mcp",
-  "http-mcp",
-  "plugin-worker",
-  "memory-writer",
-  "exec-session",
-  "goal",
-  "cron",
-] as const;
-
-export type ResourceKind = (typeof RESOURCE_KINDS)[number];
+export type ResourceKind =
+  | "browser"
+  | "stdio-mcp"
+  | "http-mcp"
+  | "plugin-worker"
+  | "memory-writer"
+  | "exec-session"
+  | "goal"
+  | "cron";
 
 export type FileSystemCapability = Readonly<{
   read: readonly CanonicalPath[];
@@ -75,18 +72,7 @@ export type ToolCapabilityContext = Readonly<{
   workspaceRoots: readonly CanonicalPath[];
 }>;
 
-export type ToolCapabilities = Readonly<{
-  filesystem: "none" | "read" | "write";
-  process: "none" | "spawn" | "interactive";
-  network: "none" | "http" | "browser" | "arbitrary";
-  externalSideEffect: ExternalEffectLevel;
-  persistence: "none" | "session" | "cross-turn";
-  sensitiveData: "none" | "memory" | "agent-source" | "credentials";
-  resolveAccess: (
-    params: Readonly<Record<string, unknown>>,
-    context: ToolCapabilityContext,
-  ) => ResolvedAccessSet;
-}>;
-
-export type RequestedCapability = ResolvedAccess;
-export type RequestedCapabilities = ResolvedAccessSet;
+export type ToolAccessResolver = (
+  params: Readonly<Record<string, unknown>>,
+  context: ToolCapabilityContext,
+) => ResolvedAccessSet;

@@ -1,10 +1,6 @@
-export * from "./domain/capability.js";
-export * from "./domain/permission-profile.js";
-export * from "./guard/capability-registry.js";
-export * from "./guard/tool-guard.js";
-export * from "./policy/entrypoint-classifier.js";
-export * from "./policy/policy-cap.js";
-export * from "./policy/policy-hash.js";
-export * from "./policy/policy-resolver.js";
-export * from "./policy/presets.js";
-export * from "./ports/tool-call-guard-port.js";
+export { PolicyToolCallGuard, type AuthorizationResolver } from "./guard/policy-tool-call-guard.js";
+export type {
+  ToolCallGuardDecision,
+  ToolCallGuardPort,
+  ToolCallGuardRequest,
+} from "./ports/tool-call-guard-port.js";

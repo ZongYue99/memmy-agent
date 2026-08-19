@@ -1,13 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { EntrypointClassifier } from "../../../../src/core/agent-runtime/sandbox/policy/entrypoint-classifier.js";
+import { classifyEntrypoint } from "../../../../src/core/agent-runtime/sandbox/policy/entrypoint-classifier.js";
 
 describe("EntrypointClassifier", () => {
   it("keeps Desktop, CLI, and TUI interactive with a trusted approval channel", () => {
-    const classifier = new EntrypointClassifier();
-
     expect(
       ["desktop", "cli", "tui"].map((source) =>
-        classifier.classify({
+        classifyEntrypoint({
           source: source as "desktop" | "cli" | "tui",
           projectId: "project-1",
           executorId: "local",
@@ -46,7 +44,7 @@ describe("EntrypointClassifier", () => {
 
   it("classifies unattended entrypoints as confidential and non-interactive", () => {
     expect(
-      new EntrypointClassifier().classify({
+      classifyEntrypoint({
         source: "cron",
         projectId: "project-1",
         executorId: "local",
