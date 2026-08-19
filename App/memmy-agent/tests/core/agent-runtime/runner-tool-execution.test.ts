@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AgentRunner, AgentRunSpec } from "../../../src/core/agent-runtime/runner.js";
 import { Tool, type ToolExecutionContext } from "../../../src/core/agent-runtime/tools/base.js";
 import { ToolRegistry } from "../../../src/core/agent-runtime/tools/registry.js";
@@ -49,7 +49,10 @@ describe("AgentRunner tool execution", () => {
     const runner = new AgentRunner();
     const call = new ToolCallRequest({ id: "c1", name: "echo", arguments: { text: "hi" } });
     const spec = new AgentRunSpec({
-      tools: { execute: async (name: string, args: any) => args.text, get: () => ({ readOnly: true }) } as any,
+      tools: {
+        execute: async (name: string, args: any) => args.text,
+        get: () => ({ readOnly: true }),
+      } as any,
     });
 
     const [result] = await runner.executeTools(spec, [call]);
@@ -58,9 +61,60 @@ describe("AgentRunner tool execution", () => {
     expect(result.event).toMatchObject({ name: "echo", status: "ok" });
   });
 
+  it("runs the tool guard after parameter preparation and before execution", async () => {
+    const execute = vi.fn(async () => "should not run");
+    const authorize = vi.fn(async () => ({ type: "deny" as const, reason: "exceeds_policy_cap" }));
+    const tools = {
+      prepareCall: (_name: string, params: Record<string, any>) => [
+        { execute },
+        { count: Number(params.count) },
+        null,
+      ],
+      get: () => ({ readOnly: false }),
+    } as any;
+    const [result] = await new AgentRunner().executeTools(
+      new AgentRunSpec({ tools, toolCallGuard: { authorize } }),
+      [new ToolCallRequest({ id: "guarded-call", name: "write_file", arguments: { count: "2" } })],
+    );
+
+    expect(authorize).toHaveBeenCalledWith({
+      callId: "guarded-call",
+      toolName: "write_file",
+      arguments: { count: 2 },
+    });
+    expect(execute).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      result: "Error: sandbox_denied: exceeds_policy_cap",
+      event: { name: "write_file", status: "error", detail: "sandbox_denied: exceeds_policy_cap" },
+    });
+  });
+
+  it("fails closed when the tool guard is unavailable", async () => {
+    const execute = vi.fn(async () => "should not run");
+    const tools = {
+      prepareCall: (_name: string, params: Record<string, any>) => [{ execute }, params, null],
+      get: () => ({ readOnly: false }),
+    } as any;
+    const [result] = await new AgentRunner().executeTools(
+      new AgentRunSpec({
+        tools,
+        toolCallGuard: {
+          authorize: async () => {
+            throw new Error("policy store offline");
+          },
+        },
+      }),
+      [new ToolCallRequest({ id: "guard-error", name: "exec", arguments: { command: "pwd" } })],
+    );
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(result.result).toBe("Error: sandbox_denied: guard_unavailable: policy store offline");
+  });
+
   it("keeps file lint failures as successful tool content", async () => {
     const runner = new AgentRunner();
-    const content = "Successfully wrote /workspace/broken.json\n\nLint results:\n- /workspace/broken.json: failed\n  syntax error";
+    const content =
+      "Successfully wrote /workspace/broken.json\n\nLint results:\n- /workspace/broken.json: failed\n  syntax error";
     const call = new ToolCallRequest({ id: "c1", name: "write_file", arguments: {} });
     const spec = new AgentRunSpec({
       failOnToolError: true,
@@ -130,8 +184,16 @@ describe("AgentRunner tool execution", () => {
     const results = await new AgentRunner().executeTools(
       new AgentRunSpec({ tools, workspace: "/workspace", progressCallback }),
       [
-        new ToolCallRequest({ id: "noop-call", name: "write_file", arguments: { path: "same.txt", unchanged: true } }),
-        new ToolCallRequest({ id: "write-call", name: "write_file", arguments: { path: "changed.txt", unchanged: false } }),
+        new ToolCallRequest({
+          id: "noop-call",
+          name: "write_file",
+          arguments: { path: "same.txt", unchanged: true },
+        }),
+        new ToolCallRequest({
+          id: "write-call",
+          name: "write_file",
+          arguments: { path: "changed.txt", unchanged: false },
+        }),
       ],
     );
 
@@ -139,7 +201,13 @@ describe("AgentRunner tool execution", () => {
     const noopEvents = fileEditEvents.filter((event) => event.call_id === "noop-call");
     const writeEvents = fileEditEvents.filter((event) => event.call_id === "write-call");
     expect(noopEvents).toHaveLength(2);
-    expect(noopEvents[1]).toMatchObject({ phase: "end", status: "done", unchanged: true, added: 0, deleted: 0 });
+    expect(noopEvents[1]).toMatchObject({
+      phase: "end",
+      status: "done",
+      unchanged: true,
+      added: 0,
+      deleted: 0,
+    });
     expect(noopEvents[0]?.ui_tool_call_id).toBe(noopEvents[1]?.ui_tool_call_id);
     expect(writeEvents).toHaveLength(2);
     expect(writeEvents[1]).toMatchObject({ phase: "end", status: "done" });
@@ -148,8 +216,16 @@ describe("AgentRunner tool execution", () => {
 
   it("returns SSRF and workspace boundary errors as recoverable tool results", async () => {
     const runner = new AgentRunner();
-    const ssrf = new ToolCallRequest({ id: "c1", name: "web_fetch", arguments: { url: "http://127.0.0.1/admin" } });
-    const workspace = new ToolCallRequest({ id: "c2", name: "read_file", arguments: { path: "/etc/passwd" } });
+    const ssrf = new ToolCallRequest({
+      id: "c1",
+      name: "web_fetch",
+      arguments: { url: "http://127.0.0.1/admin" },
+    });
+    const workspace = new ToolCallRequest({
+      id: "c2",
+      name: "read_file",
+      arguments: { path: "/etc/passwd" },
+    });
     const spec = new AgentRunSpec({
       failOnToolError: true,
       tools: {
@@ -176,14 +252,11 @@ describe("AgentRunner tool execution", () => {
     tools.register(new DelayTool("read_b", 20, true, sharedEvents));
     tools.register(new DelayTool("write_a", 1, false, sharedEvents));
 
-    await new AgentRunner().executeTools(
-      new AgentRunSpec({ tools, concurrentTools: true }),
-      [
-        new ToolCallRequest({ id: "ro1", name: "read_a", arguments: {} }),
-        new ToolCallRequest({ id: "ro2", name: "read_b", arguments: {} }),
-        new ToolCallRequest({ id: "rw1", name: "write_a", arguments: {} }),
-      ],
-    );
+    await new AgentRunner().executeTools(new AgentRunSpec({ tools, concurrentTools: true }), [
+      new ToolCallRequest({ id: "ro1", name: "read_a", arguments: {} }),
+      new ToolCallRequest({ id: "ro2", name: "read_b", arguments: {} }),
+      new ToolCallRequest({ id: "rw1", name: "write_a", arguments: {} }),
+    ]);
 
     expect(sharedEvents.slice(0, 2)).toEqual(["start:read_a", "start:read_b"]);
     expect(sharedEvents.indexOf("end:read_a")).toBeLessThan(sharedEvents.indexOf("start:write_a"));
@@ -210,7 +283,11 @@ describe("AgentRunner tool execution", () => {
         return { type: "object", properties: {}, required: [] };
       }
 
-      async execute(_params: Record<string, any> = {}, context?: ToolExecutionContext): Promise<string> {
+      async execute(
+        _params: Record<string, any> = {},
+        context?: ToolExecutionContext,
+      ): Promise<string> {
+        void _params;
         if (context) receivedContexts.push(context);
         entered();
         return await new Promise((resolve, reject) => {

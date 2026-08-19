@@ -5,6 +5,10 @@ import { LLMProvider, LLMResponse, ToolCallRequest } from "../../providers/base.
 import type { ActualModelContext } from "@memmy/local-api-contracts";
 import { CONTEXT_SAFETY_BUFFER_TOKENS } from "../../token-budget.js";
 import { ToolRegistry } from "./tools/registry.js";
+import type {
+  ToolCallGuardDecision,
+  ToolCallGuardPort,
+} from "./sandbox/ports/tool-call-guard-port.js";
 import type { FileMutationOutcome, ToolExecutionContext } from "./tools/base.js";
 import { AgentHook, AgentHookContext } from "./hook.js";
 import {
@@ -143,43 +147,47 @@ export class AgentRunSpec {
   internalTurnContext?: AgentInternalTurnContext | null;
   actualModelContext?: ActualModelContext | null;
   onMaxFinalizationStarting?: (() => void) | null;
+  toolCallGuard?: ToolCallGuardPort | null;
 
-  constructor(init: {
-    messages?: Record<string, any>[];
-    initialMessages?: Record<string, any>[];
-    provider?: LLMProvider;
-    tools?: ToolRegistry | any;
-    model?: string | null;
-    maxIterations?: number;
-    maxTokens?: number;
-    temperature?: number | null;
-    reasoningEffort?: string | null;
-    maxToolResultChars?: number;
-    toolResultMaxCharsByName?: ToolResultMaxCharsByName;
-    failOnToolError?: boolean;
-    concurrentTools?: boolean;
-    hook?: AgentHook | null;
-    errorMessage?: string | null;
-    maxIterationsMessage?: string | null;
-    maxIterationsFinalPrompt?: string | null;
-    workspace?: string | null;
-    sessionKey?: string | null;
-    contextWindowTokens?: number | null;
-    contextBlockLimit?: number | null;
-    providerRetryMode?: string;
-    progressCallback?: any;
-    streamProgressDeltas?: boolean;
-    retryWaitCallback?: any;
-    checkpointCallback?: ((payload: Record<string, any>) => Promise<void> | void) | null;
-    injectionCallback?: ((opts?: { limit?: number }) => Promise<any[]> | any[]) | null;
-    llmTimeoutS?: number | null;
-    abortSignal?: AbortSignal | null;
-    turnId?: string | null;
-    boundary?: TurnCancellationBoundary | null;
-    internalTurnContext?: AgentInternalTurnContext | null;
-    actualModelContext?: ActualModelContext | null;
-    onMaxFinalizationStarting?: (() => void) | null;
-  } = {}) {
+  constructor(
+    init: {
+      messages?: Record<string, any>[];
+      initialMessages?: Record<string, any>[];
+      provider?: LLMProvider;
+      tools?: ToolRegistry | any;
+      model?: string | null;
+      maxIterations?: number;
+      maxTokens?: number;
+      temperature?: number | null;
+      reasoningEffort?: string | null;
+      maxToolResultChars?: number;
+      toolResultMaxCharsByName?: ToolResultMaxCharsByName;
+      failOnToolError?: boolean;
+      concurrentTools?: boolean;
+      hook?: AgentHook | null;
+      errorMessage?: string | null;
+      maxIterationsMessage?: string | null;
+      maxIterationsFinalPrompt?: string | null;
+      workspace?: string | null;
+      sessionKey?: string | null;
+      contextWindowTokens?: number | null;
+      contextBlockLimit?: number | null;
+      providerRetryMode?: string;
+      progressCallback?: any;
+      streamProgressDeltas?: boolean;
+      retryWaitCallback?: any;
+      checkpointCallback?: ((payload: Record<string, any>) => Promise<void> | void) | null;
+      injectionCallback?: ((opts?: { limit?: number }) => Promise<any[]> | any[]) | null;
+      llmTimeoutS?: number | null;
+      abortSignal?: AbortSignal | null;
+      turnId?: string | null;
+      boundary?: TurnCancellationBoundary | null;
+      internalTurnContext?: AgentInternalTurnContext | null;
+      actualModelContext?: ActualModelContext | null;
+      onMaxFinalizationStarting?: (() => void) | null;
+      toolCallGuard?: ToolCallGuardPort | null;
+    } = {},
+  ) {
     this.messages = this.initialMessages = init.messages ?? init.initialMessages ?? [];
     this.provider = init.provider;
     this.tools = init.tools;
@@ -213,6 +221,7 @@ export class AgentRunSpec {
     this.internalTurnContext = init.internalTurnContext ?? null;
     this.actualModelContext = init.actualModelContext ?? null;
     this.onMaxFinalizationStarting = init.onMaxFinalizationStarting ?? null;
+    this.toolCallGuard = init.toolCallGuard ?? null;
   }
 }
 
@@ -246,7 +255,8 @@ export class AgentRunResult {
     error?: string | null;
     hadInjections?: boolean;
   }) {
-    const response = init.response ?? new LLMResponse({ content: init.content ?? init.finalContent ?? "" });
+    const response =
+      init.response ?? new LLMResponse({ content: init.content ?? init.finalContent ?? "" });
     this.finalContent = init.finalContent ?? init.content ?? response.content ?? "";
     this.finalContentStreamed = Boolean(init.finalContentStreamed);
     this.content = init.content ?? this.finalContent ?? "";
@@ -270,23 +280,45 @@ export class AgentRunner {
     this.provider = provider ?? undefined;
   }
 
+  private static blockedToolDecision(
+    spec: AgentRunSpec,
+    call: ToolCallRequest,
+    decision: Exclude<ToolCallGuardDecision, { type: "allow" }>,
+  ): { call: ToolCallRequest; result: string; event: Record<string, any>; error?: Error | null } {
+    const code = decision.type === "ask" ? "sandbox_approval_required" : "sandbox_denied";
+    const message = `Error: ${code}: ${decision.reason}`;
+    return {
+      call,
+      result: message,
+      event: { name: call.name, status: "error", detail: `${code}: ${decision.reason}` },
+      error: spec.failOnToolError ? new Error(message) : null,
+    };
+  }
+
   static mergeMessageContent(left: any, right: any): string | Array<Record<string, any>> {
-    if (typeof left === "string" && typeof right === "string") return left ? `${left}\n\n${right}` : right;
+    if (typeof left === "string" && typeof right === "string")
+      return left ? `${left}\n\n${right}` : right;
     const toBlocks = (value: any): Array<Record<string, any>> => {
-      if (Array.isArray(value)) return value.map((item) => (item && typeof item === "object" ? item : { type: "text", text: String(item) }));
+      if (Array.isArray(value))
+        return value.map((item) =>
+          item && typeof item === "object" ? item : { type: "text", text: String(item) },
+        );
       if (value == null) return [];
       return [{ type: "text", text: String(value) }];
     };
     return [...toBlocks(left), ...toBlocks(right)];
   }
 
-  static appendInjectedMessages(messages: Record<string, any>[], injections: Record<string, any>[]): void {
+  static appendInjectedMessages(
+    messages: Record<string, any>[],
+    injections: Record<string, any>[],
+  ): void {
     for (const injection of injections) {
       if (
-        messages.length
-        && injection.role === "user"
-        && messages.at(-1)?.role === "user"
-        && injection.webui_queue_steer_origin !== true
+        messages.length &&
+        injection.role === "user" &&
+        messages.at(-1)?.role === "user" &&
+        injection.webui_queue_steer_origin !== true
       ) {
         const merged = { ...messages.at(-1)! };
         merged.content = AgentRunner.mergeMessageContent(merged.content, injection.content);
@@ -327,9 +359,7 @@ export class AgentRunner {
             : {}),
           ...(typeof item.turn_id === "string" ? { turn_id: item.turn_id } : {}),
           ...(item.turn_source ? { turn_source: structuredClone(item.turn_source) } : {}),
-          ...(item.webui_queue_steer_origin === true
-            ? { webui_queue_steer_origin: true }
-            : {}),
+          ...(item.webui_queue_steer_origin === true ? { webui_queue_steer_origin: true } : {}),
           ...(item.webui_queue_steer_recovery
             ? { webui_queue_steer_recovery: structuredClone(item.webui_queue_steer_recovery) }
             : {}),
@@ -374,7 +404,11 @@ export class AgentRunner {
     return [true, injectionCycles];
   }
 
-  private buildRequestArgs(spec: AgentRunSpec, messages: Record<string, any>[], tools: Record<string, any>[] | null): Record<string, any> {
+  private buildRequestArgs(
+    spec: AgentRunSpec,
+    messages: Record<string, any>[],
+    tools: Record<string, any>[] | null,
+  ): Record<string, any> {
     const args: Record<string, any> = {
       messages: messages.map((message) => {
         const providerMessage = { ...message };
@@ -423,14 +457,15 @@ export class AgentRunner {
   }
 
   private static visibleMessageText(content: unknown): string {
-    const text = typeof content === "string"
-      ? content
-      : Array.isArray(content)
+    const text =
+      typeof content === "string"
         ? content
-          .filter((block) => block?.type === "text" && typeof block.text === "string")
-          .map((block) => block.text)
-          .join("\n")
-        : "";
+        : Array.isArray(content)
+          ? content
+              .filter((block) => block?.type === "text" && typeof block.text === "string")
+              .map((block) => block.text)
+              .join("\n")
+          : "";
     const runtimeIndex = text.indexOf(RUNTIME_CONTEXT_TAG);
     return (runtimeIndex >= 0 ? text.slice(0, runtimeIndex) : text).trim();
   }
@@ -451,9 +486,10 @@ export class AgentRunner {
         if (text) latestUserIntent = text;
       }
       if (!Array.isArray(message.content)) continue;
-      const messageIntent = message.role === "user"
-        ? AgentRunner.visibleMessageText(message.content)
-        : latestUserIntent;
+      const messageIntent =
+        message.role === "user"
+          ? AgentRunner.visibleMessageText(message.content)
+          : latestUserIntent;
       for (const block of message.content) {
         if (block?.type !== "image_url") continue;
         const record = AgentRunner.imageRecord(state, block);
@@ -482,7 +518,10 @@ export class AgentRunner {
       .trim();
     const characters = [...escaped];
     if (characters.length <= IMAGE_ANALYSIS_MAX_CHARS) return escaped;
-    const keep = Math.max(0, IMAGE_ANALYSIS_MAX_CHARS - [...IMAGE_ANALYSIS_TRUNCATION_MARKER].length);
+    const keep = Math.max(
+      0,
+      IMAGE_ANALYSIS_MAX_CHARS - [...IMAGE_ANALYSIS_TRUNCATION_MARKER].length,
+    );
     return `${characters.slice(0, keep).join("")}${IMAGE_ANALYSIS_TRUNCATION_MARKER}`;
   }
 
@@ -529,19 +568,18 @@ export class AgentRunner {
     return changed ? prepared : messages;
   }
 
-  private canRunAccountImageTextFallback(
-    spec: AgentRunSpec,
-    response: LLMResponse,
-  ): boolean {
+  private canRunAccountImageTextFallback(spec: AgentRunSpec, response: LLMResponse): boolean {
     const provider = spec.provider ?? this.provider;
     if (
-      !provider
-      || typeof provider.supportsAccountImageTextFallback !== "function"
-      || !provider.supportsAccountImageTextFallback()
-    ) return false;
+      !provider ||
+      typeof provider.supportsAccountImageTextFallback !== "function" ||
+      !provider.supportsAccountImageTextFallback()
+    )
+      return false;
     const modelContext = spec.actualModelContext;
     if (!modelContext) return !(provider instanceof FallbackProvider);
-    if (modelContext.source !== "account" || modelContext.provider !== "memmy_account") return false;
+    if (modelContext.source !== "account" || modelContext.provider !== "memmy_account")
+      return false;
     return response.actualProvider == null || response.actualProvider === "memmy_account";
   }
 
@@ -551,10 +589,11 @@ export class AgentRunner {
   ): Promise<LLMResponse> {
     if (spec.abortSignal?.aborted) return abortedResponse();
     const provider = spec.provider ?? this.provider;
-    if (!provider) return new LLMResponse({
-      content: "Account image analysis provider is unavailable.",
-      finishReason: "error",
-    });
+    if (!provider)
+      return new LLMResponse({
+        content: "Account image analysis provider is unavailable.",
+        finishReason: "error",
+      });
 
     const prompt = renderTemplate("agent/image-to-text.md", {
       strip: true,
@@ -570,32 +609,35 @@ export class AgentRunner {
     const timeoutS = normalizeTimeout(spec.llmTimeoutS);
     let timer: ReturnType<typeof setTimeout> | null = null;
     let timedOut = false;
-    const timeout = timeoutS == null
-      ? null
-      : new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => {
-          timedOut = true;
-          controller.abort();
-          reject(new Error("llmTimeout"));
-        }, timeoutS * 1000);
-      });
+    const timeout =
+      timeoutS == null
+        ? null
+        : new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(() => {
+              timedOut = true;
+              controller.abort();
+              reject(new Error("llmTimeout"));
+            }, timeoutS * 1000);
+          });
 
     try {
       const request = provider.runAccountImageTextFallback({
-        messages: [{
-          role: "user",
-          content: [
-            { type: "text", text: prompt },
-            ...batch.blocks,
-          ],
-        }],
+        messages: [
+          {
+            role: "user",
+            content: [{ type: "text", text: prompt }, ...batch.blocks],
+          },
+        ],
         signal: controller.signal,
       });
       const response = await (timeout ? Promise.race([request, timeout]) : request);
-      return response ?? new LLMResponse({
-        content: "Account image analysis provider is unavailable.",
-        finishReason: "error",
-      });
+      return (
+        response ??
+        new LLMResponse({
+          content: "Account image analysis provider is unavailable.",
+          finishReason: "error",
+        })
+      );
     } catch (requestError) {
       if (parentSignal?.aborted) return abortedResponse();
       if (timedOut || (requestError as Error).message === "llmTimeout") {
@@ -616,19 +658,18 @@ export class AgentRunner {
   }
 
   private static terminalImageError(response: LLMResponse): boolean {
-    return response.finishReason === "error" && (
-      response.errorCategory === "image_input_unsupported"
-      || response.errorCategory === "image_analysis_failed"
-      || (
-        response.failedProvider === "memmy_account"
-        && response.failedModel === "image2text"
-      )
+    return (
+      response.finishReason === "error" &&
+      (response.errorCategory === "image_input_unsupported" ||
+        response.errorCategory === "image_analysis_failed" ||
+        (response.failedProvider === "memmy_account" && response.failedModel === "image2text"))
     );
   }
 
   private async callProvider(provider: any, args: any, stream = false): Promise<LLMResponse> {
     if (stream) {
-      if (typeof provider.chatStreamWithRetry === "function") return provider.chatStreamWithRetry(args);
+      if (typeof provider.chatStreamWithRetry === "function")
+        return provider.chatStreamWithRetry(args);
       if (typeof provider.chatStream === "function") return provider.chatStream(args);
     }
     if (typeof provider.chatWithRetry === "function") return provider.chatWithRetry(args);
@@ -646,11 +687,13 @@ export class AgentRunner {
     if (!provider) throw new Error("AgentRunSpec.provider is required");
     if (spec.abortSignal?.aborted) return abortedResponse();
     const boundary = spec.boundary ?? null;
-    const shouldEmitLive = (): boolean => boundary?.shouldEmitLive() ?? spec.abortSignal?.aborted !== true;
+    const shouldEmitLive = (): boolean =>
+      boundary?.shouldEmitLive() ?? spec.abortSignal?.aborted !== true;
     const timeoutS = normalizeTimeout(spec.llmTimeoutS);
-    const tools = options.toolsOverride === undefined
-      ? spec.tools?.getDefinitions?.() ?? []
-      : options.toolsOverride;
+    const tools =
+      options.toolsOverride === undefined
+        ? (spec.tools?.getDefinitions?.() ?? [])
+        : options.toolsOverride;
     const wantsStreaming = options.forceNonStreaming ? false : hook.wantsStreaming();
     const providerRuntime = provider as any;
     const wantsProgressStreaming =
@@ -658,18 +701,19 @@ export class AgentRunner {
       !wantsStreaming &&
       spec.streamProgressDeltas &&
       spec.progressCallback &&
-      (
-        providerRuntime.supportsProgressDeltas === true ||
-        (provider.constructor as any)?.supportsProgressDeltas === true
-      );
+      (providerRuntime.supportsProgressDeltas === true ||
+        (provider.constructor as any)?.supportsProgressDeltas === true);
     const args = this.buildRequestArgs(spec, messages, tools);
-    const liveFileEdits = !options.forceNonStreaming && spec.progressCallback && onProgressAcceptsFileEditEvents(spec.progressCallback)
-      ? new StreamingFileEditTracker({
-        workspace: spec.workspace ?? null,
-        tools: spec.tools,
-        emit: (events) => invokeFileEditProgress(spec.progressCallback, events),
-      })
-      : null;
+    const liveFileEdits =
+      !options.forceNonStreaming &&
+      spec.progressCallback &&
+      onProgressAcceptsFileEditEvents(spec.progressCallback)
+        ? new StreamingFileEditTracker({
+            workspace: spec.workspace ?? null,
+            tools: spec.tools,
+            emit: (events) => invokeFileEditProgress(spec.progressCallback, events),
+          })
+        : null;
 
     const attachToolCallDelta = (): void => {
       if (!liveFileEdits) return;
@@ -712,7 +756,9 @@ export class AgentRunner {
         await hook.emitReasoning(delta);
       };
       try {
-        return finishLiveFileEdits(await withAbort(this.callProvider(provider, args, true), spec.abortSignal));
+        return finishLiveFileEdits(
+          await withAbort(this.callProvider(provider, args, true), spec.abortSignal),
+        );
       } catch (error) {
         if (isAbortError(error)) {
           await abortLiveFileEdits();
@@ -734,7 +780,11 @@ export class AgentRunner {
         streamBuf += delta;
         const nextVisible = stripThink(streamBuf);
         const incremental = nextVisible.slice(previousVisible.length);
-        if (await thinkExtractor.feed(streamBuf, (text) => shouldEmitLive() ? hook.emitReasoning(text) : undefined)) {
+        if (
+          await thinkExtractor.feed(streamBuf, (text) =>
+            shouldEmitLive() ? hook.emitReasoning(text) : undefined,
+          )
+        ) {
           context.streamedReasoning = true;
           progressState.reasoningOpen = true;
         }
@@ -749,7 +799,9 @@ export class AgentRunner {
       };
       let response: LLMResponse;
       try {
-        response = await finishLiveFileEdits(await withAbort(this.callProvider(provider, args, true), spec.abortSignal));
+        response = await finishLiveFileEdits(
+          await withAbort(this.callProvider(provider, args, true), spec.abortSignal),
+        );
       } catch (error) {
         if (isAbortError(error)) {
           await abortLiveFileEdits();
@@ -779,7 +831,10 @@ export class AgentRunner {
     }
   }
 
-  private async requestFinalizationRetry(spec: AgentRunSpec, messages: Record<string, any>[]): Promise<LLMResponse> {
+  private async requestFinalizationRetry(
+    spec: AgentRunSpec,
+    messages: Record<string, any>[],
+  ): Promise<LLMResponse> {
     const provider = spec.provider ?? this.provider;
     if (!provider) throw new Error("AgentRunSpec.provider is required");
     const retryMessages = [...messages, buildFinalizationRetryMessage()];
@@ -802,8 +857,12 @@ export class AgentRunner {
     return result;
   }
 
-  private accumulateUsage(target: Record<string, any>, usage: Record<string, any> | null | undefined): void {
-    for (const [key, value] of Object.entries(this.usageDict(usage))) target[key] = Number(target[key] ?? 0) + value;
+  private accumulateUsage(
+    target: Record<string, any>,
+    usage: Record<string, any> | null | undefined,
+  ): void {
+    for (const [key, value] of Object.entries(this.usageDict(usage)))
+      target[key] = Number(target[key] ?? 0) + value;
   }
 
   private mergeUsage(left: Record<string, any>, right: Record<string, any>): Record<string, any> {
@@ -824,10 +883,15 @@ export class AgentRunner {
   private normalizeToolResult(spec: AgentRunSpec, callId: string, name: string, result: any): any {
     const wasEmpty =
       result == null ||
-      (typeof result === "string" && (!result.trim() || /^\(.+ completed with no output\)$/.test(result.trim()))) ||
+      (typeof result === "string" &&
+        (!result.trim() || /^\(.+ completed with no output\)$/.test(result.trim()))) ||
       (Array.isArray(result) && result.length === 0);
     let content = ensureNonemptyToolResult(name, result);
-    const maxChars = resolveToolResultMaxChars(name, spec.maxToolResultChars, spec.toolResultMaxCharsByName);
+    const maxChars = resolveToolResultMaxChars(
+      name,
+      spec.maxToolResultChars,
+      spec.toolResultMaxCharsByName,
+    );
     try {
       content = maybePersistToolResult(
         spec.workspace ?? undefined,
@@ -857,7 +921,13 @@ export class AgentRunner {
     const out: Array<{ call: any; result: any; event: Record<string, any>; error?: any }> = [];
     for (const batch of batches) {
       if (spec.concurrentTools && batch.length > 1) {
-        out.push(...(await Promise.all(batch.map((call) => this.runTool(spec, call, externalLookupCounts, workspaceViolationCounts)))));
+        out.push(
+          ...(await Promise.all(
+            batch.map((call) =>
+              this.runTool(spec, call, externalLookupCounts, workspaceViolationCounts),
+            ),
+          )),
+        );
       } else {
         for (const call of batch) {
           if (spec.abortSignal?.aborted) break;
@@ -877,12 +947,30 @@ export class AgentRunner {
     const hint = "\n\n[Analyze the error above and try a different approach.]";
     if (spec.abortSignal?.aborted) {
       const event = { name: call.name, status: "error", detail: "task cancelled" };
-      return { call, result: "Error: task cancelled", event, error: spec.failOnToolError ? createAbortError() : null };
+      return {
+        call,
+        result: "Error: task cancelled",
+        event,
+        error: spec.failOnToolError ? createAbortError() : null,
+      };
     }
-    const repeatedLookup = repeatedExternalLookupError(call.name, call.arguments, externalLookupCounts);
+    const repeatedLookup = repeatedExternalLookupError(
+      call.name,
+      call.arguments,
+      externalLookupCounts,
+    );
     if (repeatedLookup) {
-      const event = { name: call.name, status: "error", detail: "repeated external lookup blocked" };
-      return { call, result: repeatedLookup + hint, event, error: spec.failOnToolError ? new Error(repeatedLookup) : null };
+      const event = {
+        name: call.name,
+        status: "error",
+        detail: "repeated external lookup blocked",
+      };
+      return {
+        call,
+        result: repeatedLookup + hint,
+        event,
+        error: spec.failOnToolError ? new Error(repeatedLookup) : null,
+      };
     }
 
     const prepare = spec.tools?.prepareCall;
@@ -899,35 +987,71 @@ export class AgentRunner {
     }
     if (prepError) {
       const event = { name: call.name, status: "error", detail: eventDetail("", prepError, 120) };
-      const handled = this.classifyViolation(prepError, prepError + hint, event, call, workspaceViolationCounts);
+      const handled = this.classifyViolation(
+        prepError,
+        prepError + hint,
+        event,
+        call,
+        workspaceViolationCounts,
+      );
       if (handled) return { call, ...handled };
-      return { call, result: prepError + hint, event, error: spec.failOnToolError ? new Error(prepError) : null };
+      return {
+        call,
+        result: prepError + hint,
+        event,
+        error: spec.failOnToolError ? new Error(prepError) : null,
+      };
     }
 
-    const progressCallback = spec.progressCallback && onProgressAcceptsFileEditEvents(spec.progressCallback)
-      ? spec.progressCallback
-      : null;
+    if (spec.toolCallGuard) {
+      let decision: ToolCallGuardDecision;
+      try {
+        decision = await spec.toolCallGuard.authorize({
+          callId: call.id ?? null,
+          toolName: call.name,
+          arguments: params && typeof params === "object" && !Array.isArray(params) ? params : {},
+        });
+      } catch (error) {
+        decision = {
+          type: "deny",
+          reason: `guard_unavailable: ${(error as Error).message ?? String(error)}`,
+        };
+      }
+      if (decision.type !== "allow") return AgentRunner.blockedToolDecision(spec, call, decision);
+    }
+
+    const progressCallback =
+      spec.progressCallback && onProgressAcceptsFileEditEvents(spec.progressCallback)
+        ? spec.progressCallback
+        : null;
     const fileEditTrackers = progressCallback
       ? prepareFileEditTrackers({
-        callId: call.id,
-        uiToolCallId: getOrCreateUiToolCallId(call),
-        toolName: call.name,
-        tool,
-        workspace: spec.workspace,
-        params: params && typeof params === "object" && !Array.isArray(params) ? params : null,
-      })
+          callId: call.id,
+          uiToolCallId: getOrCreateUiToolCallId(call),
+          toolName: call.name,
+          tool,
+          workspace: spec.workspace,
+          params: params && typeof params === "object" && !Array.isArray(params) ? params : null,
+        })
       : [];
     if (spec.abortSignal?.aborted) {
       const event = { name: call.name, status: "error", detail: "task cancelled" };
-      return { call, result: "Error: task cancelled", event, error: spec.failOnToolError ? createAbortError() : null };
+      return {
+        call,
+        result: "Error: task cancelled",
+        event,
+        error: spec.failOnToolError ? createAbortError() : null,
+      };
     }
     if (progressCallback && fileEditTrackers.length) {
       await invokeFileEditProgress(
         progressCallback,
-        fileEditTrackers.map((tracker) => buildFileEditStartEvent(
-          tracker,
-          params && typeof params === "object" && !Array.isArray(params) ? params : null,
-        )),
+        fileEditTrackers.map((tracker) =>
+          buildFileEditStartEvent(
+            tracker,
+            params && typeof params === "object" && !Array.isArray(params) ? params : null,
+          ),
+        ),
       );
     }
 
@@ -946,9 +1070,10 @@ export class AgentRunner {
           });
         },
       };
-      const run = tool && typeof tool.execute === "function"
-        ? tool.execute(params, toolContext)
-        : spec.tools.execute(call.name, params, toolContext);
+      const run =
+        tool && typeof tool.execute === "function"
+          ? tool.execute(params, toolContext)
+          : spec.tools.execute(call.name, params, toolContext);
       raw = await withAbort(Promise.resolve(run), spec.abortSignal);
       if (spec.abortSignal?.aborted) throw createAbortError();
       let event: Record<string, any>;
@@ -961,9 +1086,24 @@ export class AgentRunner {
           );
         }
         event = { name: call.name, status: "error", detail: eventDetail("", raw, 120) };
-        const handled = this.classifyViolation(raw, raw + hint, event, call, workspaceViolationCounts);
+        const handled = this.classifyViolation(
+          raw,
+          raw + hint,
+          event,
+          call,
+          workspaceViolationCounts,
+        );
         if (handled) {
-          await spec.hook?.afterToolCall(new AgentHookContext({ spec, toolCalls: [call], toolResults: [handled.result], toolEvents: [handled.event] }), call, handled.result);
+          await spec.hook?.afterToolCall(
+            new AgentHookContext({
+              spec,
+              toolCalls: [call],
+              toolResults: [handled.result],
+              toolEvents: [handled.event],
+            }),
+            call,
+            handled.result,
+          );
           return { call, ...handled };
         }
         error = spec.failOnToolError ? new Error(raw) : null;
@@ -976,15 +1116,28 @@ export class AgentRunner {
       if (progressCallback && fileEditTrackers.length) {
         await invokeFileEditProgress(
           progressCallback,
-          fileEditTrackers.map((tracker) => buildFileEditEndEvent(
-            tracker,
-            params && typeof params === "object" && !Array.isArray(params) ? params : null,
-            event.status === "ok" ? fileMutationOutcomes.get(path.resolve(tracker.path)) : undefined,
-          )),
+          fileEditTrackers.map((tracker) =>
+            buildFileEditEndEvent(
+              tracker,
+              params && typeof params === "object" && !Array.isArray(params) ? params : null,
+              event.status === "ok"
+                ? fileMutationOutcomes.get(path.resolve(tracker.path))
+                : undefined,
+            ),
+          ),
         );
       }
       const result = this.normalizeToolResult(spec, call.id, call.name, raw);
-      await spec.hook?.afterToolCall(new AgentHookContext({ spec, toolCalls: [call], toolResults: [result], toolEvents: [event] }), call, result);
+      await spec.hook?.afterToolCall(
+        new AgentHookContext({
+          spec,
+          toolCalls: [call],
+          toolResults: [result],
+          toolEvents: [event],
+        }),
+        call,
+        result,
+      );
       return { call, result, event, error };
     } catch (error) {
       const message = isAbortError(error)
@@ -997,7 +1150,13 @@ export class AgentRunner {
         );
       }
       const event = { name: call.name, status: "error", detail: eventDetail("", message, 120) };
-      const handled = this.classifyViolation(String((error as Error).message ?? error), message, event, call, workspaceViolationCounts);
+      const handled = this.classifyViolation(
+        String((error as Error).message ?? error),
+        message,
+        event,
+        call,
+        workspaceViolationCounts,
+      );
       if (handled) return { call, ...handled };
       const result = this.normalizeToolResult(spec, call.id, call.name, message);
       return { call, result, event, error: spec.failOnToolError ? error : null };
@@ -1016,8 +1175,16 @@ export class AgentRunner {
       return { result: AgentRunner.ssrfSoftPayload(rawText), event, error: null };
     }
     if (AgentRunner.isWorkspaceViolation(rawText)) {
-      const escalation = repeatedWorkspaceViolationError(call.name, call.arguments, workspaceViolationCounts);
-      event.detail = eventDetail(escalation ? "workspace_violation_escalated: " : "workspace_violation: ", rawText, 160);
+      const escalation = repeatedWorkspaceViolationError(
+        call.name,
+        call.arguments,
+        workspaceViolationCounts,
+      );
+      event.detail = eventDetail(
+        escalation ? "workspace_violation_escalated: " : "workspace_violation: ",
+        rawText,
+        160,
+      );
       return { result: escalation ?? softPayload, event, error: null };
     }
     return null;
@@ -1025,7 +1192,9 @@ export class AgentRunner {
 
   static isSsrfViolation(text: string): boolean {
     const lowered = text.toLowerCase();
-    return ["internal/private url detected", "private/internal address", "private address"].some((marker) => lowered.includes(marker));
+    return ["internal/private url detected", "private/internal address", "private address"].some(
+      (marker) => lowered.includes(marker),
+    );
   }
 
   static isWorkspaceViolation(text: string): boolean {
@@ -1055,7 +1224,11 @@ export class AgentRunner {
 
   static appendFinalMessage(messages: Record<string, any>[], content: string | null): void {
     if (!content) return;
-    if (messages.length && messages.at(-1)?.role === "assistant" && !messages.at(-1)?.tool_calls?.length) {
+    if (
+      messages.length &&
+      messages.at(-1)?.role === "assistant" &&
+      !messages.at(-1)?.tool_calls?.length
+    ) {
       if (messages.at(-1)?.content === content) return;
       messages[messages.length - 1] = buildAssistantMessage(content);
       return;
@@ -1064,7 +1237,12 @@ export class AgentRunner {
   }
 
   static appendModelErrorPlaceholder(messages: Record<string, any>[]): void {
-    if (messages.length && messages.at(-1)?.role === "assistant" && !messages.at(-1)?.tool_calls?.length) return;
+    if (
+      messages.length &&
+      messages.at(-1)?.role === "assistant" &&
+      !messages.at(-1)?.tool_calls?.length
+    )
+      return;
     messages.push(buildAssistantMessage(PERSISTED_MODEL_ERROR_PLACEHOLDER));
   }
 
@@ -1091,7 +1269,12 @@ export class AgentRunner {
     messages.forEach((msg, index) => {
       if (msg.role === "assistant") {
         for (const tc of msg.tool_calls ?? []) {
-          if (tc?.id) declared.push({ index, id: String(tc.id), name: String(tc.function?.name ?? tc.name ?? "") });
+          if (tc?.id)
+            declared.push({
+              index,
+              id: String(tc.id),
+              name: String(tc.function?.name ?? tc.name ?? ""),
+            });
         }
       } else if (msg.role === "tool" && msg.tool_call_id) fulfilled.add(String(msg.tool_call_id));
     });
@@ -1102,7 +1285,12 @@ export class AgentRunner {
     for (const item of missing) {
       let insertAt = item.index + 1 + offset;
       while (insertAt < out.length && out[insertAt].role === "tool") insertAt += 1;
-      out.splice(insertAt, 0, { role: "tool", tool_call_id: item.id, name: item.name, content: BACKFILL_CONTENT });
+      out.splice(insertAt, 0, {
+        role: "tool",
+        tool_call_id: item.id,
+        name: item.name,
+        content: BACKFILL_CONTENT,
+      });
       offset += 1;
     }
     return out;
@@ -1123,11 +1311,19 @@ export class AgentRunner {
     return out ?? messages;
   }
 
-  private applyToolResultBudget(spec: AgentRunSpec, messages: Record<string, any>[]): Record<string, any>[] {
+  private applyToolResultBudget(
+    spec: AgentRunSpec,
+    messages: Record<string, any>[],
+  ): Record<string, any>[] {
     let out = messages;
     for (const [idx, msg] of messages.entries()) {
       if (msg.role !== "tool") continue;
-      const normalized = this.normalizeToolResult(spec, String(msg.tool_call_id ?? `tool_${idx}`), String(msg.name ?? "tool"), msg.content);
+      const normalized = this.normalizeToolResult(
+        spec,
+        String(msg.tool_call_id ?? `tool_${idx}`),
+        String(msg.name ?? "tool"),
+        msg.content,
+      );
       if (normalized !== msg.content) {
         if (out === messages) out = messages.map((m) => ({ ...m }));
         out[idx].content = normalized;
@@ -1152,8 +1348,8 @@ export class AgentRunner {
       : Number.isInteger(providerMaxTokens)
         ? Number(providerMaxTokens)
         : 4096;
-    const baseBudget = spec.contextBlockLimit
-      ?? spec.contextWindowTokens - maxOutput - CONTEXT_SAFETY_BUFFER_TOKENS;
+    const baseBudget =
+      spec.contextBlockLimit ?? spec.contextWindowTokens - maxOutput - CONTEXT_SAFETY_BUFFER_TOKENS;
     const budget = baseBudget - Math.max(0, options.reservedPromptTokens ?? 0);
     if (budget <= 0) return messages;
     const estimateResult = estimatePromptTokensChain(
@@ -1305,21 +1501,18 @@ export class AgentRunner {
       }
 
       if (
-        response.errorCategory === "image_input_unsupported"
-        && !context.streamedContent
-        && !context.streamedReasoning
-        && response.toolCalls.length === 0
-        && this.canRunAccountImageTextFallback(spec, response)
+        response.errorCategory === "image_input_unsupported" &&
+        !context.streamedContent &&
+        !context.streamedReasoning &&
+        response.toolCalls.length === 0 &&
+        this.canRunAccountImageTextFallback(spec, response)
       ) {
         const pendingBatch = this.collectPendingImageBatch(messagesForModel, imageTextState);
         if (pendingBatch) {
-          const mainActualProvider = response.actualProvider
-            ?? spec.actualModelContext?.provider
-            ?? null;
-          const mainActualModel = response.actualModel
-            ?? spec.actualModelContext?.model
-            ?? spec.model
-            ?? null;
+          const mainActualProvider =
+            response.actualProvider ?? spec.actualModelContext?.provider ?? null;
+          const mainActualModel =
+            response.actualModel ?? spec.actualModelContext?.model ?? spec.model ?? null;
           const imageResponse = await this.requestAccountImageText(spec, pendingBatch);
           const imageUsage = this.usageDict(imageResponse.usage);
           this.accumulateUsage(usage, imageUsage);
@@ -1328,15 +1521,16 @@ export class AgentRunner {
           if (spec.abortSignal?.aborted || imageResponse.errorKind === "aborted") {
             response = abortedResponse();
           } else if (
-            imageResponse.finishReason === "error"
-            || isBlankText(imageResponse.content)
-            || imageResponse.toolCalls.length > 0
+            imageResponse.finishReason === "error" ||
+            isBlankText(imageResponse.content) ||
+            imageResponse.toolCalls.length > 0
           ) {
-            const failureDetail = imageResponse.finishReason === "error"
-              ? imageResponse.content
-              : isBlankText(imageResponse.content)
-                ? "image2text returned an empty description"
-                : "image2text returned an unexpected tool call";
+            const failureDetail =
+              imageResponse.finishReason === "error"
+                ? imageResponse.content
+                : isBlankText(imageResponse.content)
+                  ? "image2text returned an empty description"
+                  : "image2text returned an unexpected tool call";
             response = new LLMResponse({
               content: failureDetail || "Image analysis failed.",
               finishReason: "error",
@@ -1351,14 +1545,17 @@ export class AgentRunner {
               actualModel: mainActualModel,
               failedProvider: "memmy_account",
               failedModel: "image2text",
-              errorCategory: imageResponse.errorCategory === "quota_exhausted"
-                ? "quota_exhausted"
-                : "image_analysis_failed",
+              errorCategory:
+                imageResponse.errorCategory === "quota_exhausted"
+                  ? "quota_exhausted"
+                  : "image_analysis_failed",
             });
           } else {
             const batchId = imageTextState.nextBatchId;
             imageTextState.nextBatchId += 1;
-            const description = AgentRunner.safeImageAnalysisDescription(imageResponse.content ?? "");
+            const description = AgentRunner.safeImageAnalysisDescription(
+              imageResponse.content ?? "",
+            );
             for (const record of pendingBatch.records) record.batchId = batchId;
             imageTextState.batches.set(batchId, {
               id: batchId,
@@ -1393,7 +1590,11 @@ export class AgentRunner {
         break;
       }
 
-      const [reasoningText, cleanedContent] = extractReasoning(response.reasoningContent, response.thinkingBlocks, response.content);
+      const [reasoningText, cleanedContent] = extractReasoning(
+        response.reasoningContent,
+        response.thinkingBlocks,
+        response.content,
+      );
       response.content = cleanedContent;
       if (reasoningText && !context.streamedReasoning) {
         await hook.emitReasoning(reasoningText);
@@ -1417,12 +1618,22 @@ export class AgentRunner {
           pendingToolCalls: response.toolCalls.map((call) => call.toOpenAIToolCall()),
         });
         await hook.beforeExecuteTools(context);
-        const executed = await this.executeTools(spec, response.toolCalls, externalLookupCounts, workspaceViolationCounts);
+        const executed = await this.executeTools(
+          spec,
+          response.toolCalls,
+          externalLookupCounts,
+          workspaceViolationCounts,
+        );
         const completed: Record<string, any>[] = [];
         for (const item of executed) {
           toolCalls.push(item.call);
           toolEvents.push(item.event);
-          const toolMessage = { role: "tool", tool_call_id: item.call.id, name: item.call.name, content: item.result };
+          const toolMessage = {
+            role: "tool",
+            tool_call_id: item.call.id,
+            name: item.call.name,
+            content: item.result,
+          };
           messages.push(toolMessage);
           completed.push(toolMessage);
         }
@@ -1462,7 +1673,13 @@ export class AgentRunner {
           context.error = error;
           context.stopReason = stopReason;
           await hook.afterIteration(context);
-          const [shouldContinue, cycles] = await this.tryDrainInjections(spec, messages, null, injectionCycles, { phase: "after tool error" });
+          const [shouldContinue, cycles] = await this.tryDrainInjections(
+            spec,
+            messages,
+            null,
+            injectionCycles,
+            { phase: "after tool error" },
+          );
           injectionCycles = cycles;
           if (shouldContinue) {
             hadInjections = true;
@@ -1480,7 +1697,13 @@ export class AgentRunner {
         });
         emptyContentRetries = 0;
         lengthRecoveries = 0;
-        const [drained, cycles] = await this.tryDrainInjections(spec, messages, null, injectionCycles, { phase: "after tool execution" });
+        const [drained, cycles] = await this.tryDrainInjections(
+          spec,
+          messages,
+          null,
+          injectionCycles,
+          { phase: "after tool execution" },
+        );
         injectionCycles = cycles;
         if (drained) hadInjections = true;
         await hook.afterIteration(context);
@@ -1510,31 +1733,40 @@ export class AgentRunner {
       if (response.finishReason === "length" && !isBlankText(clean)) {
         lengthRecoveries += 1;
         if (lengthRecoveries <= MAX_LENGTH_RECOVERIES) {
-          messages.push(buildAssistantMessage(clean, {
-            reasoningContent: response.reasoningContent,
-            thinkingBlocks: response.thinkingBlocks,
-            finishReason: response.finishReason,
-          }));
+          messages.push(
+            buildAssistantMessage(clean, {
+              reasoningContent: response.reasoningContent,
+              thinkingBlocks: response.thinkingBlocks,
+              finishReason: response.finishReason,
+            }),
+          );
           messages.push(buildLengthRecoveryMessage());
           await hook.afterIteration(context);
           continue;
         }
       }
 
-      const assistant = response.finishReason !== "error" && !isBlankText(clean)
-        ? buildAssistantMessage(clean, {
-          reasoningContent: response.reasoningContent,
-          thinkingBlocks: response.thinkingBlocks,
-          finishReason: response.finishReason,
-        })
-        : null;
+      const assistant =
+        response.finishReason !== "error" && !isBlankText(clean)
+          ? buildAssistantMessage(clean, {
+              reasoningContent: response.reasoningContent,
+              thinkingBlocks: response.thinkingBlocks,
+              finishReason: response.finishReason,
+            })
+          : null;
       const terminalImageError = AgentRunner.terminalImageError(response);
       let shouldContinue = false;
       if (!terminalImageError) {
-        const [drained, cycles] = await this.tryDrainInjections(spec, messages, assistant, injectionCycles, {
-          phase: "after final response",
-          iteration,
-        });
+        const [drained, cycles] = await this.tryDrainInjections(
+          spec,
+          messages,
+          assistant,
+          injectionCycles,
+          {
+            phase: "after final response",
+            iteration,
+          },
+        );
         shouldContinue = drained;
         injectionCycles = cycles;
         if (shouldContinue) hadInjections = true;
@@ -1557,7 +1789,13 @@ export class AgentRunner {
         context.stopReason = stopReason;
         await hook.afterIteration(context);
         if (terminalImageError) break;
-        const [drained, nextCycles] = await this.tryDrainInjections(spec, messages, null, injectionCycles, { phase: "after LLM error" });
+        const [drained, nextCycles] = await this.tryDrainInjections(
+          spec,
+          messages,
+          null,
+          injectionCycles,
+          { phase: "after LLM error" },
+        );
         injectionCycles = nextCycles;
         if (drained) {
           hadInjections = true;
@@ -1575,7 +1813,13 @@ export class AgentRunner {
         context.error = error;
         context.stopReason = stopReason;
         await hook.afterIteration(context);
-        const [drained, nextCycles] = await this.tryDrainInjections(spec, messages, null, injectionCycles, { phase: "after empty response" });
+        const [drained, nextCycles] = await this.tryDrainInjections(
+          spec,
+          messages,
+          null,
+          injectionCycles,
+          { phase: "after empty response" },
+        );
         injectionCycles = nextCycles;
         if (drained) {
           hadInjections = true;
@@ -1613,12 +1857,17 @@ export class AgentRunner {
         spec.onMaxFinalizationStarting?.();
         const preparedMessages = this.prepareMessagesForModel(spec, messages, {
           toolsForRequest: null,
-          reservedPromptTokens: estimateMessageTokens({ role: "user", content: spec.maxIterationsFinalPrompt }),
+          reservedPromptTokens: estimateMessageTokens({
+            role: "user",
+            content: spec.maxIterationsFinalPrompt,
+          }),
         }).map((message) => ({ ...message }));
-        AgentRunner.appendInjectedMessages(preparedMessages, [{
-          role: "user",
-          content: spec.maxIterationsFinalPrompt,
-        }]);
+        AgentRunner.appendInjectedMessages(preparedMessages, [
+          {
+            role: "user",
+            content: spec.maxIterationsFinalPrompt,
+          },
+        ]);
         let requestMessages = this.prepareImageMessages(preparedMessages, imageTextState);
         const context = new AgentHookContext({
           spec,
@@ -1635,34 +1884,32 @@ export class AgentRunner {
           this.accumulateUsage(usage, finalUsage);
           let recoveredImageInput = false;
           if (
-            response.errorCategory === "image_input_unsupported"
-            && response.toolCalls.length === 0
-            && this.canRunAccountImageTextFallback(spec, response)
+            response.errorCategory === "image_input_unsupported" &&
+            response.toolCalls.length === 0 &&
+            this.canRunAccountImageTextFallback(spec, response)
           ) {
             const pendingBatch = this.collectPendingImageBatch(requestMessages, imageTextState);
             if (pendingBatch) {
               recoveredImageInput = true;
-              const mainActualProvider = response.actualProvider
-                ?? spec.actualModelContext?.provider
-                ?? null;
-              const mainActualModel = response.actualModel
-                ?? spec.actualModelContext?.model
-                ?? spec.model
-                ?? null;
+              const mainActualProvider =
+                response.actualProvider ?? spec.actualModelContext?.provider ?? null;
+              const mainActualModel =
+                response.actualModel ?? spec.actualModelContext?.model ?? spec.model ?? null;
               const imageResponse = await this.requestAccountImageText(spec, pendingBatch);
               this.accumulateUsage(usage, this.usageDict(imageResponse.usage));
               if (spec.abortSignal?.aborted || imageResponse.errorKind === "aborted") {
                 response = abortedResponse();
               } else if (
-                imageResponse.finishReason === "error"
-                || isBlankText(imageResponse.content)
-                || imageResponse.toolCalls.length > 0
+                imageResponse.finishReason === "error" ||
+                isBlankText(imageResponse.content) ||
+                imageResponse.toolCalls.length > 0
               ) {
-                const failureDetail = imageResponse.finishReason === "error"
-                  ? imageResponse.content
-                  : isBlankText(imageResponse.content)
-                    ? "image2text returned an empty description"
-                    : "image2text returned an unexpected tool call";
+                const failureDetail =
+                  imageResponse.finishReason === "error"
+                    ? imageResponse.content
+                    : isBlankText(imageResponse.content)
+                      ? "image2text returned an empty description"
+                      : "image2text returned an unexpected tool call";
                 response = new LLMResponse({
                   content: failureDetail || "Image analysis failed.",
                   finishReason: "error",
@@ -1677,14 +1924,17 @@ export class AgentRunner {
                   actualModel: mainActualModel,
                   failedProvider: "memmy_account",
                   failedModel: "image2text",
-                  errorCategory: imageResponse.errorCategory === "quota_exhausted"
-                    ? "quota_exhausted"
-                    : "image_analysis_failed",
+                  errorCategory:
+                    imageResponse.errorCategory === "quota_exhausted"
+                      ? "quota_exhausted"
+                      : "image_analysis_failed",
                 });
               } else {
                 const batchId = imageTextState.nextBatchId;
                 imageTextState.nextBatchId += 1;
-                const description = AgentRunner.safeImageAnalysisDescription(imageResponse.content ?? "");
+                const description = AgentRunner.safeImageAnalysisDescription(
+                  imageResponse.content ?? "",
+                );
                 for (const record of pendingBatch.records) record.batchId = batchId;
                 imageTextState.batches.set(batchId, {
                   id: batchId,
@@ -1698,10 +1948,12 @@ export class AgentRunner {
                     content: spec.maxIterationsFinalPrompt,
                   }),
                 }).map((message) => ({ ...message }));
-                AgentRunner.appendInjectedMessages(retryMessages, [{
-                  role: "user",
-                  content: spec.maxIterationsFinalPrompt,
-                }]);
+                AgentRunner.appendInjectedMessages(retryMessages, [
+                  {
+                    role: "user",
+                    content: spec.maxIterationsFinalPrompt,
+                  },
+                ]);
                 requestMessages = this.prepareImageMessages(retryMessages, imageTextState);
                 response = await this.requestModel(spec, requestMessages, hook, context, {
                   toolsOverride: null,
@@ -1716,8 +1968,8 @@ export class AgentRunner {
             stopReason = "cancelled";
             error = finalContent;
           } else if (
-            response.finishReason === "error"
-            && (recoveredImageInput || AgentRunner.terminalImageError(response))
+            response.finishReason === "error" &&
+            (recoveredImageInput || AgentRunner.terminalImageError(response))
           ) {
             const [, cleanedContent] = extractReasoning(
               response.reasoningContent,
@@ -1725,9 +1977,10 @@ export class AgentRunner {
               response.content,
             );
             response.content = cleanedContent;
-            finalContent = hook.finalizeContent(context, response.content)
-              || spec.errorMessage
-              || DEFAULT_ERROR_MESSAGE;
+            finalContent =
+              hook.finalizeContent(context, response.content) ||
+              spec.errorMessage ||
+              DEFAULT_ERROR_MESSAGE;
             stopReason = "error";
             error = finalContent;
             AgentRunner.appendModelErrorPlaceholder(messages);
@@ -1739,9 +1992,8 @@ export class AgentRunner {
             );
             response.content = cleanedContent;
             const clean = hook.finalizeContent(context, response.content);
-            finalContent = response.finishReason !== "error" && !isBlankText(clean)
-              ? clean
-              : fallback;
+            finalContent =
+              response.finishReason !== "error" && !isBlankText(clean) ? clean : fallback;
             AgentRunner.appendFinalMessage(messages, finalContent);
           }
         } catch (requestError) {
@@ -1757,7 +2009,13 @@ export class AgentRunner {
       } else {
         finalContent = fallback;
         AgentRunner.appendFinalMessage(messages, finalContent);
-        const [drained, cycles] = await this.tryDrainInjections(spec, messages, null, injectionCycles, { phase: "after maxIterations" });
+        const [drained, cycles] = await this.tryDrainInjections(
+          spec,
+          messages,
+          null,
+          injectionCycles,
+          { phase: "after maxIterations" },
+        );
         injectionCycles = cycles;
         if (drained) hadInjections = true;
       }
@@ -1795,7 +2053,8 @@ function buildAssistantMessage(
   if (opts.toolCalls?.length) message.tool_calls = opts.toolCalls;
   if (opts.reasoningContent) message.reasoning_content = opts.reasoningContent;
   if (opts.thinkingBlocks?.length) message.thinking_blocks = opts.thinkingBlocks;
-  if (typeof opts.finishReason === "string" && opts.finishReason.length > 0) message.finish_reason = opts.finishReason;
+  if (typeof opts.finishReason === "string" && opts.finishReason.length > 0)
+    message.finish_reason = opts.finishReason;
   return message;
 }
 
