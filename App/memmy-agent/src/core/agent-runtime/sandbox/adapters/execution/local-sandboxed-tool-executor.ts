@@ -7,6 +7,13 @@ import type {
   SandboxedToolExecutorPort,
 } from "../../ports/sandboxed-tool-executor-port.js";
 
+type ApprovalRetryOptions = Readonly<{
+  subjectId: string;
+  resolveCurrentAuthorization: (
+    request: SandboxedToolExecutionRequest,
+  ) => Promise<SandboxedToolExecutionRequest["authorization"]>;
+}>;
+
 function firstString(...values: unknown[]): string | null {
   for (const value of values) {
     if (typeof value === "string" && value.trim()) return value;
@@ -62,7 +69,10 @@ function formatRecord(record: SandboxExecutionRecord, maxChars: number): string 
 
 /** Routes non-interactive exec calls through SandboxManager and the selected OS backend. */
 export class LocalSandboxedToolExecutor implements SandboxedToolExecutorPort {
-  constructor(private readonly manager: SandboxManager) {}
+  constructor(
+    private readonly manager: SandboxManager,
+    private readonly approvalRetry?: ApprovalRetryOptions,
+  ) {}
 
   handles(toolName: string): boolean {
     return toolName === "exec";
@@ -87,14 +97,26 @@ export class LocalSandboxedToolExecutor implements SandboxedToolExecutorPort {
       request.abortSignal && timeoutSignal
         ? AbortSignal.any([request.abortSignal, timeoutSignal])
         : (request.abortSignal ?? timeoutSignal ?? undefined);
-    const record = await this.manager.runInitialAttempt({
-      runtimeCallId: request.runtimeCallId?.trim() || `runtime-call-${randomUUID()}`,
-      call: { toolName: "exec", arguments: { command, sandboxCwd } },
+    const runtimeCallId = request.runtimeCallId?.trim() || `runtime-call-${randomUUID()}`;
+    const call = { toolName: "exec", arguments: { command, sandboxCwd } };
+    const executionInput = {
+      runtimeCallId,
+      call,
       authorization: request.authorization,
       sandboxCwd,
       workspaceRoots: [request.workspaceRoot],
       ...(abortSignal ? { abortSignal } : {}),
-    });
+    };
+    const approvalRetry = this.approvalRetry;
+    const record = approvalRetry
+      ? (
+          await this.manager.runWithApprovalRetry({
+            ...executionInput,
+            resolveCurrentAuthorization: () => approvalRetry.resolveCurrentAuthorization(request),
+            approvalSubjectId: approvalRetry.subjectId,
+          })
+        ).attempts.at(-1)!
+      : await this.manager.runInitialAttempt(executionInput);
     if (timeoutSignal?.aborted && !request.abortSignal?.aborted) {
       return `Error: Command timed out after ${timeout} seconds`;
     }

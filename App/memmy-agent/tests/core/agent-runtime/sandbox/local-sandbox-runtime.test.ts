@@ -116,4 +116,52 @@ describe.skipIf(process.platform !== "darwin")("local sandbox runtime", () => {
       }),
     ).resolves.toBe("Error: Command timed out after 1 seconds");
   });
+
+  it("performs one audited retry after an interactive allow-once decision", async () => {
+    const { root, workspace } = fixture();
+    const protectedPath = path.join(root, "approved.txt");
+    fs.writeFileSync(protectedPath, "approved-content", "utf8");
+    const canonicalProtectedPath = fs.realpathSync.native(protectedPath);
+    const runtime = createLocalSandboxRuntime({
+      workspaceRoot: workspace,
+      interactiveProfile: "workspace-confidential",
+      backgroundProfile: "workspace-confidential",
+      source: "cli",
+      projectId: "project-1",
+      approvalSubjectId: "user-1",
+      approvalPrompt: async (prompt) => {
+        expect(prompt.additionalPermission).toEqual([
+          { kind: "filesystem", access: "read", path: canonicalProtectedPath },
+        ]);
+        return "approved";
+      },
+    });
+    const arguments_ = { command: `cat ${JSON.stringify(protectedPath)}` };
+    const authorization = await authorizeExec(runtime, arguments_);
+
+    const output = await runtime.executor.execute({
+      runtimeCallId: "exec-approved",
+      toolName: "exec",
+      arguments: arguments_,
+      authorization,
+      workspaceRoot: workspace,
+    });
+    const eventKinds = fs
+      .readFileSync(path.join(workspace, ".memmy", "sandbox", "audit.jsonl"), "utf8")
+      .trimEnd()
+      .split("\n")
+      .map((line) => JSON.parse(line).detail.kind);
+    expect({ eventKinds, output }).toEqual({
+      output: expect.stringContaining("approved-content"),
+      eventKinds: [
+        "attempt-finished",
+        "approval-requested",
+        "approval-decided",
+        "approval-grant-issued",
+        "retry-planned",
+        "approval-grant-consumed",
+        "attempt-finished",
+      ],
+    });
+  });
 });

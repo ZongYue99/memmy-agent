@@ -8,6 +8,12 @@ export {
   type LocalSandboxRuntime,
 } from "./composition/local-sandbox-runtime.js";
 export type {
+  ApprovalPrompt,
+  ApprovalPromptHandler,
+  ApprovalPromptResult,
+} from "./adapters/approval/callback-approval-channel.js";
+export type { EntrypointSource } from "./policy/entrypoint-classifier.js";
+export type {
   ToolCallGuardDecision,
   ToolCallGuardPort,
   ToolCallGuardRequest,

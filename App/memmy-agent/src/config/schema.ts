@@ -820,11 +820,13 @@ export class ExecToolConfig extends Base {
 
 export type SandboxPolicyMode = "disabled" | "enforce";
 export type SandboxWorkspaceProfile = "workspace-compatible" | "workspace-confidential";
+export type SandboxApprovalPolicy = "never" | "on-request";
 
 export class SandboxPolicyConfig extends Base {
   mode: SandboxPolicyMode = "disabled";
   interactiveProfile: SandboxWorkspaceProfile = "workspace-compatible";
   backgroundProfile: SandboxWorkspaceProfile = "workspace-confidential";
+  approvalPolicy: SandboxApprovalPolicy = "never";
 
   constructor(init: Dict = {}) {
     super();
@@ -844,6 +846,11 @@ export class SandboxPolicyConfig extends Base {
       pick(value, ["backgroundProfile"], this.backgroundProfile),
       ["workspace-compatible", "workspace-confidential"] as const,
     );
+    this.approvalPolicy = assertOneOf(
+      "tools.sandboxPolicy.approvalPolicy",
+      pick(value, ["approvalPolicy"], this.approvalPolicy),
+      ["never", "on-request"] as const,
+    );
   }
 
   override toObject(): Dict {
@@ -851,6 +858,7 @@ export class SandboxPolicyConfig extends Base {
       mode: this.mode,
       interactiveProfile: this.interactiveProfile,
       backgroundProfile: this.backgroundProfile,
+      approvalPolicy: this.approvalPolicy,
     };
   }
 }

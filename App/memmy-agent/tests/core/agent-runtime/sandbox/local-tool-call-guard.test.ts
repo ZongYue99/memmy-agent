@@ -52,7 +52,28 @@ describe("local tool-call guard composition", () => {
         objective: "continue",
       }),
     ).toBe("goal");
+    expect(runtimeEntrypointSource("websocket", null, { kind: "gui" })).toBe("desktop");
+    expect(runtimeEntrypointSource("websocket", null, { kind: "tui" })).toBe("tui");
     expect(runtimeEntrypointSource("cli", null)).toBe("cli");
     expect(runtimeEntrypointSource("websocket", null)).toBe("channel");
+  });
+
+  it("allows an interactive confidential profile to ask within its approval cap", async () => {
+    const guard = createLocalToolCallGuard({
+      workspaceRoot: "/workspace/project",
+      interactiveProfile: "workspace-confidential",
+      backgroundProfile: "workspace-confidential",
+      source: "cli",
+      projectId: "project-1",
+      approvalMode: "on-request",
+    });
+
+    await expect(
+      guard.authorize({
+        callId: "read-external",
+        toolName: "read_file",
+        arguments: { path: "/opt/shared.txt" },
+      }),
+    ).resolves.toEqual({ type: "ask", reason: "approval-required" });
   });
 });

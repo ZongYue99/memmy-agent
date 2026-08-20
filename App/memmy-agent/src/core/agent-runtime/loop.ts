@@ -87,7 +87,12 @@ import { LLMRuntime } from "../../utils/llm-runtime.js";
 import { withProgressCapabilities } from "../../utils/progress-events.js";
 import { EMPTY_FINAL_RESPONSE_MESSAGE } from "../../utils/runtime.js";
 import { AgentRunner, AgentRunSpec, type AgentInternalTurnContext } from "./runner.js";
-import { createLocalSandboxRuntime, runtimeEntrypointSource } from "./sandbox/index.js";
+import {
+  createLocalSandboxRuntime,
+  runtimeEntrypointSource,
+  type ApprovalPromptHandler,
+  type EntrypointSource,
+} from "./sandbox/index.js";
 import {
   GoalRuntime,
   GoalRuntimeError,
@@ -345,6 +350,11 @@ type AgentLoopInit = {
   sessionDagQueue?: SessionDagQueueManager | null;
   projectStore?: ProjectStore | null;
   guiTranscriptMirror?: GuiTranscriptMirrorLike | null;
+  sandboxApprovalPromptFactory?: ((context: {
+    source: EntrypointSource;
+    sessionKey: string | null;
+    turnId: string | null;
+  }) => ApprovalPromptHandler | null) | null;
 };
 
 function truncateText(text: string, maxChars: number): string {
@@ -727,6 +737,9 @@ export class AgentLoop {
   runtimeModelPublisher: ((model: string | null, modelPreset?: string | null) => void) | null = null;
   private channelCapabilitiesResolver: ((channel: string) => { supportsStreaming: boolean } | null) | null = null;
   private readonly modelSelectionResolver: ((input: ModelSelectionInput) => ResolvedModelSelection | null) | null;
+  private readonly sandboxApprovalPromptFactory: NonNullable<
+    AgentLoopInit["sandboxApprovalPromptFactory"]
+  > | null;
   private activePresetValue: string | null = null;
   defaultSelectionSignature: any[] | null = null;
   mcpServers: Record<string, any>;
@@ -759,6 +772,7 @@ export class AgentLoop {
     this.defaultSelectionSignature = defaultSelectionSignature(Array.isArray(this.providerSignature) ? this.providerSignature : null);
     this.runtimeModelPublisher = init.runtimeModelPublisher ?? null;
     this.modelSelectionResolver = init.modelSelectionResolver ?? null;
+    this.sandboxApprovalPromptFactory = init.sandboxApprovalPromptFactory ?? null;
     this.extraHooks = [...(init.hooks ?? [])];
     this.bus = init.bus ?? new MessageBus();
     const initConfig = init.config ?? new Config();
@@ -3322,14 +3336,29 @@ export class AgentLoop {
       },
     });
     const hook = this.extraHooks.length ? new CompositeAgentHook([loopHook, ...this.extraHooks]) : loopHook;
+    const sandboxSource = runtimeEntrypointSource(
+      channel,
+      internalTurnContext,
+      metadata.turn_source,
+    );
+    const sandboxApprovalPrompt =
+      this.config.tools.sandboxPolicy.approvalPolicy === "on-request"
+        ? this.sandboxApprovalPromptFactory?.({
+            source: sandboxSource,
+            sessionKey: activeSessionKey,
+            turnId,
+          })
+        : null;
     const sandboxRuntime =
       this.config.tools.sandboxPolicy.mode === "enforce"
         ? createLocalSandboxRuntime({
             workspaceRoot: sessionWorkspace,
             interactiveProfile: this.config.tools.sandboxPolicy.interactiveProfile,
             backgroundProfile: this.config.tools.sandboxPolicy.backgroundProfile,
-            source: runtimeEntrypointSource(channel, internalTurnContext),
+            source: sandboxSource,
             projectId: sessionWorkspace,
+            ...(sandboxApprovalPrompt ? { approvalPrompt: sandboxApprovalPrompt } : {}),
+            ...(activeSessionKey ? { approvalSubjectId: activeSessionKey } : {}),
           })
         : null;
     const result = await this.runner.run(

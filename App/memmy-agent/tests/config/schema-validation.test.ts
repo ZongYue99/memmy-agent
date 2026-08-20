@@ -44,6 +44,7 @@ describe("config schema validation", () => {
       mode: "disabled",
       interactiveProfile: "workspace-compatible",
       backgroundProfile: "workspace-confidential",
+      approvalPolicy: "never",
     });
     const configured = new Config({
       tools: {
@@ -51,6 +52,7 @@ describe("config schema validation", () => {
           mode: "enforce",
           interactiveProfile: "workspace-confidential",
           backgroundProfile: "workspace-compatible",
+          approvalPolicy: "on-request",
         },
       },
     });
@@ -58,6 +60,7 @@ describe("config schema validation", () => {
       mode: "enforce",
       interactiveProfile: "workspace-confidential",
       backgroundProfile: "workspace-compatible",
+      approvalPolicy: "on-request",
     });
   });
 
@@ -67,6 +70,7 @@ describe("config schema validation", () => {
     [{ mode: "audit" }, /tools\.sandboxPolicy\.mode/],
     [{ interactiveProfile: "host-readable" }, /tools\.sandboxPolicy\.interactiveProfile/],
     [{ backgroundProfile: "host-readable" }, /tools\.sandboxPolicy\.backgroundProfile/],
+    [{ approvalPolicy: "always" }, /tools\.sandboxPolicy\.approvalPolicy/],
   ])("rejects invalid sandbox policy config %#", (sandboxPolicy, error) => {
     expect(() => new Config({ tools: { sandboxPolicy } } as any)).toThrow(error);
   });
