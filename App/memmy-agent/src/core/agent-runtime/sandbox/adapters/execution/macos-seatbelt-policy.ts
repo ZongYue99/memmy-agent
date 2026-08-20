@@ -29,7 +29,11 @@ const PLATFORM_POLICY = `(version 1)
 (allow file-read* file-write* (subpath "/dev/fd"))
 (allow file-read-metadata
   (literal "/dev")
-  (regex #"^/dev/.*$"))`;
+  (regex #"^/dev/.*$"))
+(allow file-read-metadata file-test-existence
+  (literal "/etc")
+  (literal "/tmp")
+  (literal "/var"))`;
 
 export type CompiledSeatbeltPolicy = Readonly<{
   policy: string;

@@ -4,6 +4,8 @@ import fs from "node:fs";
 import path from "node:path";
 import type { NormalizedToolCall, SandboxAttempt } from "../../domain/sandbox-attempt.js";
 import type { PermissionProfile } from "../../domain/permission-profile.js";
+import type { SandboxExecutionOutcome } from "../../domain/sandbox-result.js";
+import { DenialClassifier } from "../../guard/denial-classifier.js";
 import { stablePolicyHash } from "../../policy/policy-hash.js";
 import type { SandboxExecutionHandle } from "../../ports/sandbox-executor-port.js";
 import type {
@@ -15,6 +17,10 @@ import {
   compileMacosSeatbeltPolicy,
   type CompiledSeatbeltPolicy,
 } from "./macos-seatbelt-policy.js";
+import {
+  MacosSeatbeltDenialMonitor,
+  type SeatbeltDenialMonitor,
+} from "./macos-seatbelt-denial-monitor.js";
 
 const DEFAULT_SEATBELT_EXECUTABLE = "/usr/bin/sandbox-exec";
 const TERMINATE_GRACE_MS = 1_000;
@@ -30,6 +36,8 @@ type MacosSeatbeltBackendOptions = Readonly<{
   seatbeltExecutable?: string;
   spawnProcess?: SpawnProcess;
   now?: () => number;
+  denialMonitor?: SeatbeltDenialMonitor;
+  denialClassifier?: DenialClassifier;
 }>;
 
 type OutputCapture = Readonly<{
@@ -165,12 +173,16 @@ export class MacosSeatbeltBackend implements SandboxBackend {
   private readonly seatbeltExecutable: string;
   private readonly spawnProcess: SpawnProcess;
   private readonly now: () => number;
+  private readonly denialMonitor: SeatbeltDenialMonitor;
+  private readonly denialClassifier: DenialClassifier;
 
   constructor(options: MacosSeatbeltBackendOptions = {}) {
     this.platform = options.platform ?? process.platform;
     this.seatbeltExecutable = options.seatbeltExecutable ?? DEFAULT_SEATBELT_EXECUTABLE;
     this.spawnProcess = options.spawnProcess ?? spawn;
     this.now = options.now ?? Date.now;
+    this.denialMonitor = options.denialMonitor ?? new MacosSeatbeltDenialMonitor();
+    this.denialClassifier = options.denialClassifier ?? new DenialClassifier();
   }
 
   inspectSupport(input: SandboxBackendSelectionInput): SandboxBackendSupport {
@@ -230,16 +242,27 @@ export class MacosSeatbeltBackend implements SandboxBackend {
       input.attempt.workspaceRoots,
       compiled,
     );
+    const environment = buildEnvironment(input.attempt.permissionProfile);
+    const denialCapture = await this.denialMonitor
+      .start(input.attempt.permissionProfile.process.maxRuntimeMs)
+      .catch(() => null);
     const startedAt = this.now();
     const output = createOutputCapture(input.attempt.permissionProfile.process.maxOutputBytes);
     const args = ["-p", compiled.policy, ...compiled.parameters, "--", "/bin/sh", "-c", command];
-    const child = this.spawnProcess(this.seatbeltExecutable, args, {
-      cwd: sandboxCwd,
-      env: buildEnvironment(input.attempt.permissionProfile),
-      detached: true,
-      shell: false,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    let child: ChildProcess;
+    try {
+      child = this.spawnProcess(this.seatbeltExecutable, args, {
+        cwd: sandboxCwd,
+        env: environment,
+        detached: true,
+        shell: false,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch {
+      await denialCapture?.finish();
+      throw new MacosSeatbeltBackendError("spawn-failed");
+    }
+    if (child.pid) denialCapture?.bindProcess(child.pid);
     child.stdout?.on("data", (chunk: Buffer) => output.append("stdout", chunk));
     child.stderr?.on("data", (chunk: Buffer) => output.append("stderr", chunk));
 
@@ -253,24 +276,39 @@ export class MacosSeatbeltBackend implements SandboxBackend {
     const completion = new Promise<Awaited<SandboxExecutionHandle["completion"]>>((resolve) => {
       resolveCompletion = resolve;
     });
-    let settled = false;
-    const finish = (outcome: Awaited<SandboxExecutionHandle["completion"]>) => {
-      if (settled) return;
-      settled = true;
+    let settling = false;
+    const finish = async (outcome: SandboxExecutionOutcome): Promise<void> => {
+      if (settling) return;
+      settling = true;
       if (terminateTimer) clearTimeout(terminateTimer);
       clearTimeout(runtimeTimer);
       input.abortSignal?.removeEventListener("abort", onAbort);
-      resolveCompletion(outcome);
+      const observations = (await denialCapture?.finish().catch(() => [])) ?? [];
+      const finalOutcome =
+        outcome.kind === "completed"
+          ? (() => {
+              const evidence = this.denialClassifier.classify({
+                attempt: input.attempt,
+                result: outcome.result,
+                observations,
+                filesystem: compiled,
+              });
+              return evidence ? { kind: "denied" as const, evidence } : outcome;
+            })()
+          : outcome;
+      resolveCompletion(finalOutcome);
       resolveClosed();
     };
-    child.once("error", () => finish({ kind: "runtime-failed", reason: "executor-spawn-failed" }));
+    child.once("error", () => {
+      void finish({ kind: "runtime-failed", reason: "executor-spawn-failed" });
+    });
     child.once("close", (exitCode, signal) => {
       if (cancellationReason) {
-        finish({ kind: "cancelled", reason: cancellationReason });
+        void finish({ kind: "cancelled", reason: cancellationReason });
         return;
       }
       const captured = output.result();
-      finish({
+      void finish({
         kind: "completed",
         result: {
           exitCode,
@@ -311,6 +349,7 @@ export class MacosSeatbeltBackend implements SandboxBackend {
       child.once("spawn", resolve);
       child.once("error", () => reject(new MacosSeatbeltBackendError("spawn-failed")));
     });
+    if (child.pid) denialCapture?.bindProcess(child.pid);
     if (cancellationReason) {
       processTreeSignal(child, "SIGTERM");
       await cancelPromise;

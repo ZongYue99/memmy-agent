@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { spawn } from "node:child_process";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -9,6 +10,7 @@ import {
 } from "../../../../src/core/agent-runtime/sandbox/adapters/execution/backend-registry.js";
 import { LocalSandboxExecutor } from "../../../../src/core/agent-runtime/sandbox/adapters/execution/local-sandbox-executor.js";
 import { MacosSeatbeltBackend } from "../../../../src/core/agent-runtime/sandbox/adapters/execution/macos-seatbelt-backend.js";
+import { MacosSeatbeltDenialMonitor } from "../../../../src/core/agent-runtime/sandbox/adapters/execution/macos-seatbelt-denial-monitor.js";
 import type {
   PermissionProfile,
   UnhashedPermissionProfile,
@@ -103,6 +105,39 @@ afterEach(() => {
 });
 
 runtimeDescribe("macOS Seatbelt runtime", () => {
+  it("binds a kernel denial event to the sandbox-exec process id", async () => {
+    const { protectedFile } = fixture();
+    const capture = await new MacosSeatbeltDenialMonitor().start(10_000);
+    expect(capture).not.toBeNull();
+    if (!capture) return;
+    const policy = `(version 1)\n(deny default)\n(allow process-exec)\n(allow file-read*)\n(allow file-write-data (subpath "/dev/fd"))\n(deny file-read* (literal (param "DENIED")))`;
+    const child = spawn(
+      "/usr/bin/sandbox-exec",
+      [
+        "-p",
+        policy,
+        `-DDENIED=${fs.realpathSync.native(protectedFile)}`,
+        "--",
+        "/bin/cat",
+        protectedFile,
+      ],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+    if (!child.pid) throw new Error("sandbox-exec did not expose a process id");
+    capture.bindProcess(child.pid);
+    await new Promise<void>((resolve, reject) => {
+      child.once("error", reject);
+      child.once("close", () => resolve());
+    });
+    expect(await capture.finish()).toContainEqual(
+      expect.objectContaining({
+        processId: child.pid,
+        operation: "file-read-data",
+        target: fs.realpathSync.native(protectedFile),
+      }),
+    );
+  });
+
   it("fails closed when the backend cannot enforce a finite process quota", () => {
     const { workspace, profile } = fixture(32);
     const executor = new LocalSandboxExecutor(new BackendRegistry([new MacosSeatbeltBackend()]));
@@ -117,6 +152,8 @@ runtimeDescribe("macOS Seatbelt runtime", () => {
 
   it("allows workspace writes and denies explicitly blocked reads and writes", async () => {
     const { workspace, denied, protectedFile, profile } = fixture();
+    const canonicalProtectedFile = fs.realpathSync.native(protectedFile);
+    const canonicalDenied = fs.realpathSync.native(denied);
     const allowed = await run("printf ok > result.txt; printf ok", workspace, profile);
     const deniedRead = await run(`/bin/cat ${JSON.stringify(protectedFile)}`, workspace, profile);
     const deniedWrite = await run(
@@ -129,13 +166,42 @@ runtimeDescribe("macOS Seatbelt runtime", () => {
       kind: "completed",
       result: { exitCode: 0, stdoutSummary: "ok" },
     });
-    expect(deniedRead).toMatchObject({ kind: "completed", result: { exitCode: 1 } });
-    expect(deniedWrite).toMatchObject({ kind: "completed", result: { exitCode: 1 } });
-    if (deniedRead.kind === "completed" && deniedWrite.kind === "completed") {
-      expect(deniedRead.result.stderrSummary).toContain("Operation not permitted");
-      expect(deniedWrite.result.stderrSummary).toContain("Operation not permitted");
-    }
+    expect(deniedRead).toMatchObject({
+      kind: "denied",
+      evidence: {
+        source: "os-sandbox",
+        operation: "file-read",
+        requiredCapability: { kind: "filesystem", access: "read", path: canonicalProtectedFile },
+        systemCode: "SEATBELT_DENY",
+      },
+    });
+    expect(deniedWrite).toMatchObject({
+      kind: "denied",
+      evidence: {
+        source: "os-sandbox",
+        operation: "file-write",
+        requiredCapability: {
+          kind: "filesystem",
+          access: "write",
+          path: path.join(canonicalDenied, "out.txt"),
+        },
+        systemCode: "SEATBELT_DENY",
+      },
+    });
     expect(fs.existsSync(path.join(denied, "out.txt"))).toBe(false);
+  });
+
+  it("does not promote forged process output to a confirmed denial", async () => {
+    const { workspace, profile } = fixture();
+    const outcome = await run(
+      "printf 'Operation not permitted\\n' >&2; exit 1",
+      workspace,
+      profile,
+    );
+    expect(outcome).toMatchObject({
+      kind: "completed",
+      result: { exitCode: 1, stderrSummary: "Operation not permitted\n" },
+    });
   });
 
   it("bounds captured output and enforces the runtime deadline", async () => {
@@ -167,7 +233,10 @@ runtimeDescribe("macOS Seatbelt runtime", () => {
     if (!address || typeof address === "string") throw new Error("test server did not bind TCP");
     try {
       const outcome = await run(`/usr/bin/nc -z 127.0.0.1 ${address.port}`, workspace, profile);
-      expect(outcome).toMatchObject({ kind: "completed", result: { exitCode: 1 } });
+      expect(outcome).toMatchObject({
+        kind: "denied",
+        evidence: { source: "os-sandbox", operation: "network", systemCode: "SEATBELT_DENY" },
+      });
       await new Promise((resolve) => setTimeout(resolve, 25));
       expect(acceptedConnections).toBe(0);
     } finally {
