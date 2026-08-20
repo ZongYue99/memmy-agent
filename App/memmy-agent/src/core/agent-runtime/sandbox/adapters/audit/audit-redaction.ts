@@ -60,6 +60,17 @@ function requireAllowedValue(value: string, allowed: readonly string[], label: s
 
 function validateDetail(detail: SandboxAuditDetail): void {
   switch (detail.kind) {
+    case "preflight-approval-requested":
+      requireText(detail.requestId, "requestId");
+      requireHash(detail.argsHash, "argsHash");
+      requireHash(detail.initialPolicyHash, "initialPolicyHash");
+      requireText(detail.subjectId, "subjectId");
+      requireTimestamp(detail.expiresAt, "expiresAt");
+      return;
+    case "preflight-approval-decided":
+      requireText(detail.requestId, "requestId");
+      requireAllowedValue(detail.decision, APPROVAL_DECISIONS, "decision");
+      return;
     case "approval-requested":
       requireText(detail.requestId, "requestId");
       requireText(detail.parentAttemptId, "parentAttemptId");

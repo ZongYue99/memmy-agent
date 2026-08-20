@@ -1,4 +1,4 @@
-import type { ChildProcess } from "node:child_process";
+import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
@@ -70,7 +70,7 @@ function attempt(
 
 function fakeChild(): Readonly<{ child: ChildProcess; request: Promise<string> }> {
   const child = new EventEmitter() as ChildProcess;
-  child.pid = 31_337;
+  Object.defineProperty(child, "pid", { value: 31_337 });
   const stdin = new PassThrough();
   child.stdin = stdin;
   child.stdout = new PassThrough();
@@ -126,7 +126,9 @@ describe("Windows native sandbox helper backend", () => {
   it("sends a hash-bound v1 request over stdin and never invokes a shell wrapper", async () => {
     const { root, helper, helperHash, profile } = fixture();
     const { child, request } = fakeChild();
-    const spawnProcess = vi.fn(() => {
+    const spawnProcess = vi.fn<
+      (command: string, args: readonly string[], options: SpawnOptions) => ChildProcess
+    >((_command, _args, _options) => {
       queueMicrotask(() => child.emit("spawn"));
       return child;
     });

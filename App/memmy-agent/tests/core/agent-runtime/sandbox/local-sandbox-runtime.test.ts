@@ -33,6 +33,79 @@ async function authorizeExec(
   return decision.authorization;
 }
 
+describe("local sandbox preflight approval", () => {
+  it("approves an external read before execution and writes bounded audit evidence", async () => {
+    const { root, workspace } = fixture();
+    const externalPath = path.join(root, "shared.txt");
+    fs.writeFileSync(externalPath, "shared");
+    const canonicalExternalPath = fs.realpathSync.native(externalPath);
+    const runtime = createLocalSandboxRuntime({
+      workspaceRoot: workspace,
+      interactiveProfile: "workspace-confidential",
+      backgroundProfile: "workspace-confidential",
+      source: "cli",
+      projectId: "project-1",
+      approvalSubjectId: "user-1",
+      approvalPrompt: async (prompt) => {
+        expect(prompt).toMatchObject({
+          runtimeCallId: "read-external",
+          additionalPermission: [
+            { kind: "filesystem", access: "read", path: canonicalExternalPath },
+          ],
+        });
+        return "approved";
+      },
+    });
+
+    const decision = await runtime.guard.authorize({
+      callId: "read-external",
+      toolName: "read_file",
+      arguments: { path: externalPath },
+    });
+    expect(decision).toMatchObject({
+      type: "allow",
+      authorization: {
+        baseGrant: { filesystem: { read: expect.arrayContaining([canonicalExternalPath]) } },
+        permissionProfile: {
+          filesystem: {
+            entries: expect.arrayContaining([
+              expect.objectContaining({ path: canonicalExternalPath, access: "read" }),
+            ]),
+          },
+        },
+      },
+    });
+    const eventKinds = fs
+      .readFileSync(path.join(workspace, ".memmy", "sandbox", "audit.jsonl"), "utf8")
+      .trimEnd()
+      .split("\n")
+      .map((line) => JSON.parse(line).detail.kind);
+    expect(eventKinds).toEqual(["preflight-approval-requested", "preflight-approval-decided"]);
+  });
+
+  it("fails closed when the preflight decision is denied", async () => {
+    const { root, workspace } = fixture();
+    const externalPath = path.join(root, "shared.txt");
+    fs.writeFileSync(externalPath, "shared");
+    const runtime = createLocalSandboxRuntime({
+      workspaceRoot: workspace,
+      interactiveProfile: "workspace-confidential",
+      backgroundProfile: "workspace-confidential",
+      source: "cli",
+      projectId: "project-1",
+      approvalPrompt: async () => "denied",
+    });
+
+    await expect(
+      runtime.guard.authorize({
+        callId: "read-denied",
+        toolName: "read_file",
+        arguments: { path: externalPath },
+      }),
+    ).resolves.toEqual({ type: "deny", reason: "approval-denied" });
+  });
+});
+
 describe.skipIf(process.platform !== "darwin")("local sandbox runtime", () => {
   it("routes exec through Seatbelt and appends its terminal audit evidence", async () => {
     const { workspace } = fixture();

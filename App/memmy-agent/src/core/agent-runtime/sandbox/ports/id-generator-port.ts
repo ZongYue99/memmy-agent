@@ -1,5 +1,6 @@
 export type SandboxIdKind =
   | "attempt"
+  | "runtime-call"
   | "approval-request"
   | "approval-grant"
   | "resource-lease"

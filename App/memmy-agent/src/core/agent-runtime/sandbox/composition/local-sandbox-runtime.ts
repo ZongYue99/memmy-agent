@@ -15,6 +15,8 @@ import { LinuxBwrapBackend } from "../adapters/execution/linux-bwrap-backend.js"
 import { MacosSeatbeltBackend } from "../adapters/execution/macos-seatbelt-backend.js";
 import { WindowsNativeHelperBackend } from "../adapters/execution/windows-native-helper-backend.js";
 import { ApprovalBroker } from "../approval/approval-broker.js";
+import { PreflightApprovalBroker } from "../approval/preflight-approval-broker.js";
+import { ApprovingToolCallGuard } from "../guard/approving-tool-call-guard.js";
 import { AttemptPlanner } from "../manager/attempt-planner.js";
 import { SandboxManager } from "../manager/sandbox-manager.js";
 import type { EntrypointSource, WorkspaceProfile } from "../policy/entrypoint-classifier.js";
@@ -74,17 +76,33 @@ export function createLocalSandboxRuntime(
     input.approvalPrompt && ["desktop", "cli", "tui"].includes(input.source)
       ? "on-request"
       : "never";
-  const guard = createLocalToolCallGuard({ ...input, workspaceRoot, approvalMode });
+  const policyGuard = createLocalToolCallGuard({ ...input, workspaceRoot, approvalMode });
+  const approvalChannel = input.approvalPrompt
+    ? new CallbackApprovalChannel(input.approvalPrompt)
+    : null;
   const approvalBroker =
-    approvalMode === "on-request" && input.approvalPrompt
+    approvalMode === "on-request" && approvalChannel
       ? new ApprovalBroker({
-          channel: new CallbackApprovalChannel(input.approvalPrompt),
+          channel: approvalChannel,
           store: new InMemoryApprovalGrantStore(),
           ids,
           clock,
           audit,
         })
       : null;
+  const guard =
+    approvalMode === "on-request" && input.approvalPrompt
+      ? new ApprovingToolCallGuard(
+          policyGuard,
+          new PreflightApprovalBroker({
+            prompt: input.approvalPrompt,
+            ids,
+            clock,
+            audit,
+          }),
+          input.approvalSubjectId ?? "local-user",
+        )
+      : policyGuard;
   const manager = new SandboxManager(new AttemptPlanner(ids, clock), platformExecutor, clock, {
     audit,
     ...(approvalBroker ? { approvalRetry: { broker: approvalBroker } } : {}),

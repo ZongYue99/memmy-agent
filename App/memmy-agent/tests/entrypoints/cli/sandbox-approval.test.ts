@@ -8,7 +8,6 @@ import {
 const prompt = {
   requestId: "request-1",
   runtimeCallId: "call-1",
-  parentAttemptId: "attempt-1",
   additionalPermission: [
     { kind: "filesystem" as const, access: "read" as const, path: "/shared/report.txt" },
   ],
@@ -20,7 +19,7 @@ describe("CLI sandbox approval", () => {
     expect(formatCliSandboxApproval(prompt)).toBe(
       "Sandbox blocked this operation. Allow once?\n  - Read /shared/report.txt",
     );
-    expect(JSON.stringify(formatCliSandboxApproval(prompt))).not.toContain("attempt-1");
+    expect(JSON.stringify(formatCliSandboxApproval(prompt))).not.toContain("call-1");
   });
 
   it("returns a bounded decision only for an active TTY prompt", async () => {

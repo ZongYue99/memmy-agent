@@ -6,7 +6,6 @@ import type { ApprovalChannelPort } from "../../ports/approval-channel-port.js";
 export type ApprovalPrompt = Readonly<{
   requestId: string;
   runtimeCallId: string;
-  parentAttemptId: string;
   additionalPermission: ResolvedAccessSet;
   expiresAt: number;
 }>;
@@ -28,7 +27,6 @@ export class CallbackApprovalChannel implements ApprovalChannelPort {
       immutableSnapshot({
         requestId: request.requestId,
         runtimeCallId: request.runtimeCallId,
-        parentAttemptId: request.parentAttemptId,
         additionalPermission: request.additionalPermission,
         expiresAt: request.expiresAt,
       }),

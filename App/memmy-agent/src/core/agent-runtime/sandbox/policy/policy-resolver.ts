@@ -78,20 +78,46 @@ function compileManagedProfile(capability: CapabilitySet): PermissionProfile {
 
 function addApprovedFilesystemAccess(
   capability: CapabilitySet,
-  grant: ApprovalGrant,
+  additionalPermission: ResolvedAccessSet,
 ): CapabilitySet {
   const filesystem = {
     read: [...capability.filesystem.read],
     write: [...capability.filesystem.write],
     deny: [...capability.filesystem.deny],
   };
-  for (const access of grant.additionalPermission) {
+  for (const access of additionalPermission) {
     if (access.kind !== "filesystem") {
       throw new Error("approval contains an unsupported capability");
     }
     filesystem[access.access].push(access.path);
   }
   return normalizeCapabilitySet({ ...capability, filesystem });
+}
+
+export function applyPreflightApproval(
+  authorization: EffectiveAuthorization,
+  additionalPermission: ResolvedAccessSet,
+): EffectiveAuthorization {
+  if (
+    authorization.approvalMode !== "on-request" ||
+    authorization.entrypoint.approvalChannel === "none"
+  ) {
+    throw new Error("the current policy does not allow approval");
+  }
+  if (!additionalPermission.length) throw new Error("approval must add a permission");
+  if (
+    additionalPermission.some((access) => !capabilitySetAllows(authorization.policyCap, access))
+  ) {
+    throw new Error("approval exceeds the current policy cap");
+  }
+  const baseGrant = addApprovedFilesystemAccess(authorization.baseGrant, additionalPermission);
+  const permissionProfile = compileManagedProfile(baseGrant);
+  return {
+    ...authorization,
+    baseGrant,
+    permissionProfile,
+    compiledPolicyHash: permissionProfile.policyHash,
+  };
 }
 
 export function resolvePolicy(input: ResolvePolicyInput): EffectiveAuthorization {
@@ -143,12 +169,5 @@ export function applyApproval(
   ) {
     throw new Error("approval grant exceeds the current policy cap");
   }
-  const baseGrant = addApprovedFilesystemAccess(authorization.baseGrant, grant);
-  const permissionProfile = compileManagedProfile(baseGrant);
-  return {
-    ...authorization,
-    baseGrant,
-    permissionProfile,
-    compiledPolicyHash: permissionProfile.policyHash,
-  };
+  return applyPreflightApproval(authorization, grant.additionalPermission);
 }

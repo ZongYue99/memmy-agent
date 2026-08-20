@@ -8,6 +8,19 @@ export type AuditAttemptState = "completed" | "denied" | "cancelled" | "runtime-
 
 export type SandboxAuditDetail =
   | Readonly<{
+      kind: "preflight-approval-requested";
+      requestId: string;
+      argsHash: string;
+      initialPolicyHash: string;
+      subjectId: string;
+      expiresAt: number;
+    }>
+  | Readonly<{
+      kind: "preflight-approval-decided";
+      requestId: string;
+      decision: ApprovalAuditDecision;
+    }>
+  | Readonly<{
       kind: "approval-requested";
       requestId: string;
       parentAttemptId: string;

@@ -74,6 +74,10 @@ describe("local tool-call guard composition", () => {
         toolName: "read_file",
         arguments: { path: "/opt/shared.txt" },
       }),
-    ).resolves.toEqual({ type: "ask", reason: "approval-required" });
+    ).resolves.toMatchObject({
+      type: "ask",
+      reason: "approval-required",
+      missingCapabilities: [{ kind: "filesystem", access: "read", path: "/opt/shared.txt" }],
+    });
   });
 });

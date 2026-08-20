@@ -1,4 +1,4 @@
-import type { ChildProcess } from "node:child_process";
+import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
@@ -75,7 +75,7 @@ function attempt(
 
 function fakeChild(): ChildProcess {
   const child = new EventEmitter() as ChildProcess;
-  child.pid = 42_424;
+  Object.defineProperty(child, "pid", { value: 42_424 });
   child.stdout = new PassThrough();
   child.stderr = new PassThrough();
   child.stdin = null;
@@ -145,7 +145,9 @@ describe("Linux Bubblewrap backend", () => {
   it("binds the attempt hash, bounds output, and launches without a shell wrapper", async () => {
     const { workspace, profile } = fixture(4);
     const child = fakeChild();
-    const spawnProcess = vi.fn(() => {
+    const spawnProcess = vi.fn<
+      (command: string, args: readonly string[], options: SpawnOptions) => ChildProcess
+    >((_command, _args, _options) => {
       queueMicrotask(() => child.emit("spawn"));
       return child;
     });

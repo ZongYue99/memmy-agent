@@ -34,7 +34,6 @@ describe("CallbackApprovalChannel", () => {
       {
         requestId: "request-1",
         runtimeCallId: "call-1",
-        parentAttemptId: "attempt-1",
         additionalPermission: request.additionalPermission,
         expiresAt: 2_000,
       },

@@ -7,6 +7,7 @@ export type ToolDecision =
   | Readonly<{
       kind: "requires-approval";
       reason: "approval-required";
+      authorization: EffectiveAuthorization;
       missingCapabilities: readonly ResolvedAccess[];
     }>
   | Readonly<{
@@ -46,6 +47,7 @@ export function decideToolAccess(authorization: EffectiveAuthorization): ToolDec
   return {
     kind: "requires-approval",
     reason: "approval-required",
+    authorization,
     missingCapabilities: missing,
   };
 }

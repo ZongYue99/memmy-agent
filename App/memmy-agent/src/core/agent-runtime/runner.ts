@@ -923,6 +923,7 @@ export class AgentRunner {
           callId: call.id ?? null,
           toolName: call.name,
           arguments: params && typeof params === "object" && !Array.isArray(params) ? params : {},
+          ...(spec.abortSignal ? { abortSignal: spec.abortSignal } : {}),
         });
       } catch (error) {
         decision = { type: "deny", reason: `guard_unavailable: ${(error as Error).message ?? String(error)}` };

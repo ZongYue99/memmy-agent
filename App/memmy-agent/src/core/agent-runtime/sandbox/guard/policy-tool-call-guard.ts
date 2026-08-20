@@ -30,7 +30,12 @@ export class PolicyToolCallGuard implements ToolCallGuardPort {
       case "execute":
         return { type: "allow", authorization: decision.authorization };
       case "requires-approval":
-        return { type: "ask", reason: decision.reason };
+        return {
+          type: "ask",
+          reason: decision.reason,
+          authorization: decision.authorization,
+          missingCapabilities: decision.missingCapabilities,
+        };
       case "deny":
         return { type: "deny", reason: decision.reason };
     }

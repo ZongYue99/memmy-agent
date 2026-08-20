@@ -60,16 +60,14 @@ describe("ToolGuard", () => {
       mode: "allowlist" as const,
       targets: [{ host: "api.example.com", protocols: ["https" as const], ports: [443] }],
     };
-    expect(
-      decideToolAccess(
-        authorization(
-          [{ kind: "network", host: "api.example.com", protocol: "https", port: 443 }],
-          { policyCap: capabilities({ network }), baseGrant: capabilities() },
-        ),
-      ),
-    ).toEqual({
+    const auth = authorization(
+      [{ kind: "network", host: "api.example.com", protocol: "https", port: 443 }],
+      { policyCap: capabilities({ network }), baseGrant: capabilities() },
+    );
+    expect(decideToolAccess(auth)).toEqual({
       kind: "requires-approval",
       reason: "approval-required",
+      authorization: auth,
       missingCapabilities: [
         { kind: "network", host: "api.example.com", protocol: "https", port: 443 },
       ],
