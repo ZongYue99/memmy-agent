@@ -1,4 +1,6 @@
 import type { SandboxType } from "./sandbox-attempt.js";
+import type { ResourceKind } from "./capability.js";
+import type { ResourceLeaseState } from "./resource-lease.js";
 
 export type ApprovalAuditDecision = "approved" | "denied" | "cancelled" | "expired" | "invalid";
 
@@ -54,6 +56,17 @@ export type SandboxAuditDetail =
       evidenceRef?: string;
       exitCode?: number | null;
       outputTruncated?: boolean;
+    }>
+  | Readonly<{
+      kind: "resource-lease-state";
+      leaseId: string;
+      resourceId: string;
+      resourceType: ResourceKind;
+      state: ResourceLeaseState;
+      compiledPolicyHash: string;
+      backendCapabilityHash: string;
+      expiresAt: number;
+      reasonCode?: string;
     }>;
 
 export type SandboxAuditEventDraft = Readonly<{

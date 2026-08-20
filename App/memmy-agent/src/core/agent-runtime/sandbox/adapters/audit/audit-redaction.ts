@@ -6,6 +6,17 @@ const REASON_CODE = /^[a-z0-9][a-z0-9._-]{0,127}$/i;
 const SHA256 = /^[a-f0-9]{64}$/;
 const APPROVAL_DECISIONS = ["approved", "denied", "cancelled", "expired", "invalid"] as const;
 const ATTEMPT_STATES = ["completed", "denied", "cancelled", "runtime-failed"] as const;
+const RESOURCE_LEASE_STATES = ["starting", "active", "revoking", "terminated", "failed"] as const;
+const RESOURCE_TYPES = [
+  "browser",
+  "stdio-mcp",
+  "http-mcp",
+  "plugin-worker",
+  "memory-writer",
+  "exec-session",
+  "goal",
+  "cron",
+] as const;
 const SANDBOX_TYPES = [
   "macos-seatbelt",
   "linux-bwrap",
@@ -101,6 +112,18 @@ function validateDetail(detail: SandboxAuditDetail): void {
       }
       if (detail.outputTruncated !== undefined && typeof detail.outputTruncated !== "boolean") {
         throw new Error("outputTruncated must be a boolean");
+      }
+      return;
+    case "resource-lease-state":
+      requireText(detail.leaseId, "leaseId");
+      requireText(detail.resourceId, "resourceId");
+      requireAllowedValue(detail.resourceType, RESOURCE_TYPES, "resourceType");
+      requireAllowedValue(detail.state, RESOURCE_LEASE_STATES, "state");
+      requireHash(detail.compiledPolicyHash, "compiledPolicyHash");
+      requireHash(detail.backendCapabilityHash, "backendCapabilityHash");
+      requireTimestamp(detail.expiresAt, "expiresAt");
+      if (detail.reasonCode && !REASON_CODE.test(detail.reasonCode)) {
+        throw new Error("reasonCode must be a normalized code");
       }
       return;
     default:
