@@ -1,7 +1,13 @@
 import type { CapabilitySet, ResolvedAccessSet } from "../domain/capability.js";
+import type { ApprovalGrant } from "../approval/approval-grant.js";
+import { approvalGrantIsValid } from "../approval/approval-grant.js";
 import type { FileSystemEntry, PermissionProfile } from "../domain/permission-profile.js";
 import type { EntrypointContext, WorkspaceProfile } from "./entrypoint-classifier.js";
-import { intersectCapabilitySets, normalizeCapabilitySet } from "./policy-cap.js";
+import {
+  capabilitySetAllows,
+  intersectCapabilitySets,
+  normalizeCapabilitySet,
+} from "./policy-cap.js";
 import { attachPolicyHash, stablePolicyHash } from "./policy-hash.js";
 
 export type ApprovalMode = "never" | "on-request";
@@ -70,6 +76,24 @@ function compileManagedProfile(capability: CapabilitySet): PermissionProfile {
   });
 }
 
+function addApprovedFilesystemAccess(
+  capability: CapabilitySet,
+  grant: ApprovalGrant,
+): CapabilitySet {
+  const filesystem = {
+    read: [...capability.filesystem.read],
+    write: [...capability.filesystem.write],
+    deny: [...capability.filesystem.deny],
+  };
+  for (const access of grant.additionalPermission) {
+    if (access.kind !== "filesystem") {
+      throw new Error("approval contains an unsupported capability");
+    }
+    filesystem[access.access].push(access.path);
+  }
+  return normalizeCapabilitySet({ ...capability, filesystem });
+}
+
 export function resolvePolicy(input: ResolvePolicyInput): EffectiveAuthorization {
   const policyCap = intersectAll(input.caps, "caps");
   const requestedBaseGrant = intersectAll(input.baseGrants, "baseGrants");
@@ -80,6 +104,7 @@ export function resolvePolicy(input: ResolvePolicyInput): EffectiveAuthorization
     workspaceProfile: input.workspaceProfile,
     policyCap,
     baseGrant,
+    approvalMode: input.approvalMode,
   });
   return {
     entrypoint: input.entrypoint,
@@ -90,6 +115,40 @@ export function resolvePolicy(input: ResolvePolicyInput): EffectiveAuthorization
     requestedCapabilities: input.requestedCapabilities ?? [],
     approvalMode: input.approvalMode,
     initialPolicyHash,
+    compiledPolicyHash: permissionProfile.policyHash,
+  };
+}
+
+export function applyApproval(
+  authorization: EffectiveAuthorization,
+  grant: ApprovalGrant,
+): EffectiveAuthorization {
+  if (!approvalGrantIsValid(grant)) throw new Error("approval grant hash verification failed");
+  if (grant.initialPolicyHash !== authorization.initialPolicyHash) {
+    throw new Error("approval grant does not match the current policy");
+  }
+  if (
+    authorization.approvalMode !== "on-request" ||
+    authorization.entrypoint.approvalChannel === "none"
+  ) {
+    throw new Error("the current policy does not allow approval");
+  }
+  if (!grant.additionalPermission.length) {
+    throw new Error("approval grant must add a permission");
+  }
+  if (
+    grant.additionalPermission.some(
+      (access) => !capabilitySetAllows(authorization.policyCap, access),
+    )
+  ) {
+    throw new Error("approval grant exceeds the current policy cap");
+  }
+  const baseGrant = addApprovedFilesystemAccess(authorization.baseGrant, grant);
+  const permissionProfile = compileManagedProfile(baseGrant);
+  return {
+    ...authorization,
+    baseGrant,
+    permissionProfile,
     compiledPolicyHash: permissionProfile.policyHash,
   };
 }
