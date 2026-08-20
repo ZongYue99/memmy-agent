@@ -786,6 +786,23 @@ export function AgentRuntimeBridge(props: {
         }
         dispatch(agentActions.connectionConnecting());
         const nextConnection = await client.connectWebSocket((event) => {
+          const approvalMessage = sandboxApprovalMessage(event);
+          if (
+            approvalMessage
+            && typeof event.request_id === "string"
+            && typeof event.connection_generation === "number"
+          ) {
+            const decision = globalThis.confirm(approvalMessage) ? "approved" : "denied";
+            try {
+              connectionRef.current?.decideSandboxApproval(
+                event.request_id,
+                decision,
+                event.connection_generation
+              );
+            } catch {
+              // Reconnects invalidate pending approvals; never replay a decision.
+            }
+          }
           if (event.event === "model_catalog_updated") {
             modelCatalogRefreshVersionRef.current += 1;
             if (event.status === "invalid") {
@@ -1113,6 +1130,25 @@ function isAgentQueueProjectionEvent(event: MemmyAgentWsEvent): boolean {
     || event.event === "message_dequeued"
     || event.event === "message_queue_removed"
     || event.event === "message_queue_snapshot";
+}
+
+function sandboxApprovalMessage(event: MemmyAgentWsEvent): string | null {
+  if (event.event !== "sandbox_approval_request" || !Array.isArray(event.additional_permission)) {
+    return null;
+  }
+  const lines = event.additional_permission.flatMap((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+    const capability = value as Record<string, unknown>;
+    if (capability.kind === "filesystem") {
+      return [`${capability.access === "write" ? "Write" : "Read"} ${String(capability.path ?? "")}`];
+    }
+    if (capability.kind === "network") {
+      return [`Connect to ${String(capability.protocol ?? "")}://${String(capability.host ?? "")}:${String(capability.port ?? "")}`];
+    }
+    return [`Use ${String(capability.kind ?? "unknown capability")}`];
+  });
+  if (!lines.length) return null;
+  return `Sandbox blocked this operation. Allow once?\n\n${lines.map((line) => `• ${line}`).join("\n")}`;
 }
 
 type SettledSuccess<T> = { ok: true; value: T };

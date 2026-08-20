@@ -14,6 +14,7 @@ import {
   type TuiGatewayQueueItem,
   type TuiGatewayState,
   type TuiModelSelection,
+  type TuiSandboxApproval,
 } from "./tui-gateway-client.js";
 import { resolveComposerCursorPosition, type ComposerLayout } from "./tui-cursor.js";
 
@@ -949,6 +950,37 @@ function QueuePanel({
   );
 }
 
+function sandboxCapabilityLabel(capability: Readonly<Record<string, unknown>>): string {
+  if (capability.kind === "filesystem") {
+    return `${capability.access === "write" ? "Write" : "Read"} ${String(capability.path ?? "")}`;
+  }
+  if (capability.kind === "network") {
+    return `Connect to ${String(capability.protocol ?? "")}://${String(capability.host ?? "")}:${String(capability.port ?? "")}`;
+  }
+  if (capability.kind === "process") {
+    return capability.interactive === true ? "Start an interactive process" : "Start a process";
+  }
+  if (capability.kind === "resource") return `Use ${String(capability.resource ?? "resource")}`;
+  return `Use ${String(capability.kind ?? "unknown capability")}`;
+}
+
+function SandboxApprovalPanel({ approval }: { approval: TuiSandboxApproval | null }) {
+  if (!approval) return null;
+  return (
+    <Box flexDirection="column" marginBottom={1} paddingLeft={1}>
+      <Text color={PALETTE.lemon} bold>
+        Sandbox blocked this operation. Allow once?
+      </Text>
+      {approval.additionalPermission.map((capability, index) => (
+        <Text key={`${approval.requestId}-${index}`} color={PALETTE.ink}>
+          {`  - ${sandboxCapabilityLabel(capability)}`}
+        </Text>
+      ))}
+      <Text color={PALETTE.muted}>Press y to allow once, n to deny.</Text>
+    </Box>
+  );
+}
+
 function MemmyTui({ config, gateway, registerCleanup, target, toolsets, version }: TuiProps) {
   const { exit } = useApp();
   const { columns, rows } = useTerminalSize();
@@ -1049,6 +1081,18 @@ function MemmyTui({ config, gateway, registerCleanup, target, toolsets, version 
       } else {
         appendMessage("system", gatewayState.busy ? "Disconnected; the external Turn keeps running." : "Goodbye.");
         exit();
+      }
+      return;
+    }
+
+    if (gatewayState.sandboxApproval) {
+      const decision = value.toLowerCase();
+      if (decision === "y") {
+        gateway.decideSandboxApproval("approved");
+        setNotice("sandbox permission allowed once");
+      } else if (decision === "n" || key.escape) {
+        gateway.decideSandboxApproval("denied");
+        setNotice("sandbox permission denied");
       }
       return;
     }
@@ -1188,6 +1232,8 @@ function MemmyTui({ config, gateway, registerCleanup, target, toolsets, version 
         loading={gatewayState.queueLoading}
       />
 
+      <SandboxApprovalPanel approval={gatewayState.sandboxApproval} />
+
       <StatusRule
         busy={gatewayState.busy}
         columns={columns}
@@ -1200,7 +1246,7 @@ function MemmyTui({ config, gateway, registerCleanup, target, toolsets, version 
 
       <Box flexDirection="column">
         <ComposerInput
-          active
+          active={!gatewayState.sandboxApproval}
           columns={columns}
           cursor={inputCursor}
           placeholder={inputPlaceholder}

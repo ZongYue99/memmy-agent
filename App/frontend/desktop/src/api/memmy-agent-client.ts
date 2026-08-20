@@ -630,6 +630,11 @@ export interface MemmyAgentWebSocketConnection {
     expectedGeneration: number,
     timeoutMs?: number
   ): Promise<AgentGoalControlResult>;
+  decideSandboxApproval(
+    requestId: string,
+    decision: "approved" | "denied",
+    expectedGeneration: number
+  ): void;
   stop(chatId: string): void;
   restart(chatId: string): void;
   status(chatId: string): void;
@@ -1565,6 +1570,19 @@ class MemmyAgentWebSocketSession implements MemmyAgentWebSocketConnection {
       pending.reject(asError(error, "Unable to control Goal"));
     }
     return promise;
+  }
+
+  decideSandboxApproval(
+    requestId: string,
+    decision: "approved" | "denied",
+    expectedGeneration: number
+  ): void {
+    if (!requestId) return;
+    this.sendOrdinaryFrame({
+      type: "sandbox_approval_decision",
+      request_id: requestId,
+      decision
+    }, expectedGeneration);
   }
 
   stop(chatId: string): void {

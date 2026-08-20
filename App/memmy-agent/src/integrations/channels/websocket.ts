@@ -83,6 +83,11 @@ import {
   type ResolvedGuiSession,
 } from "../../entrypoints/frontend-bridge/gui-session-projection.js";
 import type { GatewayTranscriptMonitor } from "../../entrypoints/frontend-bridge/gui-transcript-sync.js";
+import type {
+  ApprovalPromptHandler,
+  EntrypointSource,
+} from "../../core/agent-runtime/sandbox/index.js";
+import { WebSocketSandboxApprovalCoordinator } from "./websocket-sandbox-approval.js";
 import {
   createModelConfiguration,
   settingsPayload,
@@ -698,6 +703,7 @@ export class WebSocketChannel extends BaseChannel {
   stopExpectedTurn: WebSocketChannelOptions["stopExpectedTurn"] = undefined;
   goalControlConnections = new Map<string, Set<any>>();
   dispatchingGoalControls = new Map<string, string>();
+  readonly sandboxApprovals = new WebSocketSandboxApprovalCoordinator();
 
   constructor(config: any = {}, bus?: any, options: WebSocketChannelOptions = {}) {
     const normalized = config instanceof WebSocketConfig ? config : new WebSocketConfig(config);
@@ -768,6 +774,33 @@ export class WebSocketChannel extends BaseChannel {
     this.schedulePendingProjectDeletionContinuation();
   }
 
+  sandboxApprovalPrompt(
+    context: Readonly<{ source: EntrypointSource; sessionKey: string | null }>,
+  ): ApprovalPromptHandler | null {
+    if (!context.sessionKey || (context.source !== "desktop" && context.source !== "tui")) {
+      return null;
+    }
+    let chatId: string;
+    try {
+      chatId = toGuiChatId(context.sessionKey);
+    } catch {
+      return null;
+    }
+    const surface = context.source === "desktop" ? "gui" : "tui";
+    return (prompt, abortSignal) => {
+      const connections = [...(this.subscriptions.get(chatId) ?? [])].filter(
+        (connection) => this.connectionSurface.get(connection) === surface,
+      );
+      return this.sandboxApprovals.request({
+        chatId,
+        prompt,
+        connections,
+        send: (connection, payload) => this.safeSendTo(connection, payload),
+        ...(abortSignal ? { abortSignal } : {}),
+      });
+    };
+  }
+
   static override defaultConfig(): Record<string, any> {
     return { ...new WebSocketConfig().toObject(), enabled: true };
   }
@@ -803,6 +836,7 @@ export class WebSocketChannel extends BaseChannel {
   }
 
   cleanupConnection(connection: any): void {
+    this.sandboxApprovals.disconnect(connection);
     for (const chatId of this.connectionChats.get(connection) ?? []) {
       const subs = this.subscriptions.get(chatId);
       subs?.delete(connection);
@@ -2687,6 +2721,7 @@ export class WebSocketChannel extends BaseChannel {
   }
 
   override async stop(): Promise<void> {
+    this.sandboxApprovals.close();
     if (!this.running && !this.server) return;
     this.running = false;
     if (typeof this.server?.close === "function") {
@@ -3201,6 +3236,17 @@ export class WebSocketChannel extends BaseChannel {
 
   async dispatchEnvelope(connection: any, clientId: string, envelope: Record<string, any>): Promise<void> {
     const type = envelope.type;
+    if (type === "sandbox_approval_decision") {
+      const requestId = typeof envelope.request_id === "string" ? envelope.request_id : "";
+      const outcome = this.sandboxApprovals.decide(connection, requestId, envelope.decision);
+      await this.safeSendTo(connection, {
+        event: "sandbox_approval_result",
+        request_id: requestId,
+        accepted: outcome === "accepted",
+        outcome,
+      });
+      return;
+    }
     if (type === "queue_snapshot_request") {
       const chatId = typeof envelope.chat_id === "string" && isValidGuiChatId(envelope.chat_id)
         ? envelope.chat_id

@@ -45,6 +45,12 @@ export type TuiModelSelection = Readonly<{
   capabilities: readonly ModelCapability[];
 }>;
 
+export type TuiSandboxApproval = Readonly<{
+  requestId: string;
+  additionalPermission: readonly Readonly<Record<string, unknown>>[];
+  expiresAt: number;
+}>;
+
 export type TuiGatewayState = {
   connection: TuiGatewayConnectionStatus;
   attached: boolean;
@@ -60,6 +66,7 @@ export type TuiGatewayState = {
   modelName: string | null;
   modelSelection: TuiModelSelection | null;
   toolNames: string[];
+  sandboxApproval: TuiSandboxApproval | null;
   notice: string;
 };
 
@@ -261,6 +268,22 @@ function parseQueueItem(value: unknown): TuiGatewayQueueItem | null {
   return { clientRequestId, text: value.text, queuedAt, source };
 }
 
+function parseSandboxApproval(event: GatewayEvent): TuiSandboxApproval | null {
+  const requestId = stringValue(event.request_id);
+  const expiresAt = nonnegativeSafeInteger(event.expires_at);
+  const additionalPermission = Array.isArray(event.additional_permission)
+    ? event.additional_permission.filter(isRecord)
+    : [];
+  if (!requestId || expiresAt === null || !additionalPermission.length) return null;
+  return Object.freeze({
+    requestId,
+    additionalPermission: Object.freeze(
+      additionalPermission.map((item) => Object.freeze({ ...item })),
+    ),
+    expiresAt,
+  });
+}
+
 function normalizeHistoryMessage(value: unknown, index: number): TuiGatewayMessage | null {
   if (!isRecord(value)) return null;
   const rawRole = stringValue(value.role);
@@ -363,6 +386,7 @@ export class TuiGatewayClient {
     modelName: null,
     modelSelection: null,
     toolNames: [],
+    sandboxApproval: null,
     notice: "connecting",
   };
 
@@ -422,6 +446,7 @@ export class TuiGatewayClient {
       ownedByTui: false,
       activeTurnId: null,
       startedAt: null,
+      sandboxApproval: null,
       notice: "closed",
     });
   }
@@ -489,6 +514,20 @@ export class TuiGatewayClient {
       expected_turn_id: expectedTurnId,
     });
     return pending.promise;
+  }
+
+  decideSandboxApproval(decision: "approved" | "denied"): void {
+    const approval = this.state.sandboxApproval;
+    if (!approval) return;
+    if (!this.state.attached || this.state.connection !== "connected") {
+      throw new Error("Gateway is not attached to this Session");
+    }
+    this.sendFrame({
+      type: "sandbox_approval_decision",
+      request_id: approval.requestId,
+      decision,
+    });
+    this.patch({ sandboxApproval: null });
   }
 
   private patch(patch: Partial<TuiGatewayState>): void {
@@ -565,6 +604,7 @@ export class TuiGatewayClient {
       activeTurnId: null,
       startedAt: null,
       goalState: null,
+      sandboxApproval: null,
       notice: "attaching Session",
     });
     this.desyncedQueueRevision = null;
@@ -609,6 +649,19 @@ export class TuiGatewayClient {
   }
 
   private applyControlEvent(event: GatewayEvent, generation: number): void {
+    if (event.event === "sandbox_approval_request") {
+      const approval = parseSandboxApproval(event);
+      if (approval) {
+        this.patch({ sandboxApproval: approval, notice: "sandbox approval required" });
+      }
+      return;
+    }
+    if (event.event === "sandbox_approval_result") {
+      if (stringValue(event.request_id) === this.state.sandboxApproval?.requestId) {
+        this.patch({ sandboxApproval: null });
+      }
+      return;
+    }
     if (event.event === "message_queue_snapshot") {
       const revision = nonnegativeSafeInteger(event.revision);
       const rawItems = Array.isArray(event.items) ? event.items : null;

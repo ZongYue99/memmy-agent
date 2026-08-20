@@ -2050,6 +2050,31 @@ describe("memmy-agent client", () => {
     expect(sessionKeyToChatId("websocket:chat-1")).toBe("chat-1");
     expect(sessionKeyToChatId("legacy-session")).toBe("legacy-session");
   });
+
+  it("sends sandbox approval decisions only on the expected live connection generation", async () => {
+    const sockets: FakeSocket[] = [];
+    const client = createMemmyAgentClient({
+      fetchFn: vi.fn(async () => json(bootstrap)) as typeof fetch,
+      webSocketFactory: (url) => {
+        const socket = new FakeSocket(url);
+        sockets.push(socket);
+        return socket;
+      }
+    });
+    const connection = await connectReady(client, sockets);
+
+    connection.decideSandboxApproval("approval-1", "approved", 1);
+    expect(JSON.parse(sockets[0]!.sent.at(-1)!)).toEqual({
+      type: "sandbox_approval_decision",
+      request_id: "approval-1",
+      decision: "approved"
+    });
+    expect(() => connection.decideSandboxApproval("approval-2", "approved", 2)).toThrow();
+    expect(sockets[0]!.sent.map((frame) => JSON.parse(frame)).filter(
+      (frame) => frame.type === "sandbox_approval_decision"
+    )).toHaveLength(1);
+    connection.close();
+  });
 });
 
 function json(data: unknown, status = 200): Response {

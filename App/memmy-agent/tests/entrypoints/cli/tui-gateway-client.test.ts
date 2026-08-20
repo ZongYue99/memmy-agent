@@ -138,6 +138,38 @@ async function connectClient({
 }
 
 describe("TuiGatewayClient", () => {
+  it("surfaces a bounded sandbox request and sends one explicit decision", async () => {
+    const { client, sockets } = await connectClient();
+    const socket = sockets[0]!;
+    socket.message({
+      event: "sandbox_approval_request",
+      chat_id: client.chatId,
+      request_id: "approval-1",
+      additional_permission: [
+        { kind: "filesystem", access: "read", path: "/shared/report.txt" },
+      ],
+      expires_at: Date.now() + 60_000,
+    });
+
+    expect(client.snapshot().sandboxApproval).toEqual({
+      requestId: "approval-1",
+      additionalPermission: [
+        { kind: "filesystem", access: "read", path: "/shared/report.txt" },
+      ],
+      expiresAt: expect.any(Number),
+    });
+    client.decideSandboxApproval("approved");
+    expect(socket.sent.at(-1)).toEqual({
+      type: "sandbox_approval_decision",
+      request_id: "approval-1",
+      decision: "approved",
+    });
+    expect(client.snapshot().sandboxApproval).toBeNull();
+    client.decideSandboxApproval("denied");
+    expect(socket.sent.filter((frame) => frame.type === "sandbox_approval_decision")).toHaveLength(1);
+    client.close();
+  });
+
   it("bootstraps, declares the TUI surface, attaches one Session, and hydrates TUI history", async () => {
     const { client, fetchImpl, sockets } = await connectClient({
       historyMessages: [

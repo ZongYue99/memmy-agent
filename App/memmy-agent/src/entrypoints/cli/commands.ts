@@ -1083,9 +1083,12 @@ export async function gateway({
   const bus = new MessageBus();
   const cron = new CronService(path.join(workspacePath, "cron", "jobs.json"));
   const projectStore = new ProjectStore();
+  let sandboxApprovalChannel: WebSocketChannel | null = null;
   const loop = AgentLoop.fromConfig(loaded, bus, {
     cronService: cron,
     projectStore,
+    sandboxApprovalPromptFactory: (context) =>
+      sandboxApprovalChannel?.sandboxApprovalPrompt(context) ?? null,
   });
   if (loop.sessions instanceof SessionManager) {
     loop.guiTranscriptMirror = new GuiTranscriptMirror(loop.sessions, canonicalWorkspace);
@@ -1141,6 +1144,7 @@ export async function gateway({
   const webuiChannel = manager.getChannel("websocket");
   let transcriptMonitor: GatewayTranscriptMonitor | null = null;
   if (webuiChannel instanceof WebSocketChannel) {
+    sandboxApprovalChannel = webuiChannel;
     webuiChannel.setSessionTurnBarrier(
       (sessionKey, operation) => loop.withSessionTurnBarrier(sessionKey, operation),
     );
