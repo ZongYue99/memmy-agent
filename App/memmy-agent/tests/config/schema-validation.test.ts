@@ -39,7 +39,7 @@ function configFile(contents = ""): string {
 }
 
 describe("config schema validation", () => {
-  it("defines a migration-safe sandbox policy switch with a strict profile", () => {
+  it("keeps programmatic Config construction on the legacy compatibility policy", () => {
     expect(new SandboxPolicyConfig().toObject()).toEqual({
       mode: "disabled",
       interactiveProfile: "workspace-compatible",
@@ -60,6 +60,27 @@ describe("config schema validation", () => {
       mode: "enforce",
       interactiveProfile: "workspace-confidential",
       backgroundProfile: "workspace-compatible",
+      approvalPolicy: "on-request",
+    });
+  });
+
+  it("keeps an existing config without sandboxPolicy on the legacy compatibility mode", () => {
+    const file = configFile("tools:\n  exec:\n    enable: true\n");
+    expect(loadConfig(file).tools.sandboxPolicy.toObject()).toEqual({
+      mode: "disabled",
+      interactiveProfile: "workspace-compatible",
+      backgroundProfile: "workspace-confidential",
+      approvalPolicy: "never",
+    });
+  });
+
+  it("uses the strict sandbox policy when no config file exists", () => {
+    const file = configFile();
+    fs.rmSync(file);
+    expect(loadConfig(file).tools.sandboxPolicy.toObject()).toEqual({
+      mode: "enforce",
+      interactiveProfile: "workspace-confidential",
+      backgroundProfile: "workspace-confidential",
       approvalPolicy: "on-request",
     });
   });

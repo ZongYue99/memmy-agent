@@ -34,6 +34,7 @@ import { discoverAll, discoverChannelNames } from "../../integrations/channels/r
 import { WebSocketChannel } from "../../integrations/channels/websocket.js";
 import { createByokTokenUsageRecorder } from "../../integrations/byok-token-usage/index.js";
 import {
+  createNewInstallConfig,
   loadConfig,
   saveConfig,
   resolveConfigEnvVars,
@@ -715,7 +716,7 @@ export async function onboard({
         })
         .ask())
     ) {
-      loaded = new Config();
+      loaded = createNewInstallConfig();
       if (workspace) loaded.agents.defaults.workspace = workspace;
       replaceRuntimeConfig(configPath, loaded);
       console.log(`Config reset to defaults at ${configPath}`);
@@ -726,7 +727,7 @@ export async function onboard({
       console.log(`Config refreshed at ${configPath}`);
     }
   } else {
-    loaded = new Config();
+    loaded = createNewInstallConfig();
     if (workspace) loaded.agents.defaults.workspace = workspace;
     if (!wizard) {
       saveConfig(loaded, configPath);

@@ -61,10 +61,23 @@ export function resolveEnvVars(obj: any): any {
   return resolveInPlace(structuredClone(obj));
 }
 
+export function createNewInstallConfig(): Config {
+  return new Config({
+    tools: {
+      sandboxPolicy: {
+        mode: "enforce",
+        interactiveProfile: "workspace-confidential",
+        backgroundProfile: "workspace-confidential",
+        approvalPolicy: "on-request",
+      },
+    },
+  });
+}
+
 export function loadConfig(configPath?: string | null): Config {
   const target = expandHome(configPath ?? getConfigPath());
   if (!fs.existsSync(target)) {
-    const config = new Config();
+    const config = createNewInstallConfig();
     configureSsrfWhitelist(config.tools.ssrfWhitelist);
     return config;
   }
