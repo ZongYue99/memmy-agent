@@ -74,6 +74,7 @@ import {
 } from "./onboard.js";
 import { StreamRenderer, ThinkingSpinner } from "./stream.js";
 import { prepareStartupMigrations } from "./startup-migrations.js";
+import { createCliSandboxApprovalPromptFactory } from "./sandbox-approval.js";
 
 const CLI_TEMPLATES_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../templates");
 
@@ -1518,7 +1519,9 @@ export async function agent({
   const loaded = loadRuntimeConfig(config, workspace);
   syncRuntimeWorkspaceTemplates(loaded);
   setCliRuntimeLogs(Boolean(logs));
-  const loop = AgentLoop.fromConfig(loaded);
+  const loop = AgentLoop.fromConfig(loaded, undefined, {
+    sandboxApprovalPromptFactory: createCliSandboxApprovalPromptFactory(),
+  });
   const target = resolveTerminalTarget(terminalTargetDependenciesForLoop(loop), {
     sessionId,
     standalone,
@@ -1626,7 +1629,9 @@ export async function runInteractiveAgent(
   } = {},
 ): Promise<null> {
   const bus = new MessageBus();
-  const loop = AgentLoop.fromConfig(config, bus);
+  const loop = AgentLoop.fromConfig(config, bus, {
+    sandboxApprovalPromptFactory: createCliSandboxApprovalPromptFactory(),
+  });
   if (loop.sessions instanceof SessionManager) {
     loop.guiTranscriptMirror = new GuiTranscriptMirror(
       loop.sessions,
