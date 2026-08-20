@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { InMemoryApprovalGrantStore } from "../../../../src/core/agent-runtime/sandbox/adapters/approval/in-memory-approval-grant-store.js";
 import { ApprovalBroker } from "../../../../src/core/agent-runtime/sandbox/approval/approval-broker.js";
 import type { ApprovalRequest } from "../../../../src/core/agent-runtime/sandbox/approval/approval-grant.js";
+import type { SandboxAuditEventDraft } from "../../../../src/core/agent-runtime/sandbox/domain/audit-event.js";
 import type { NormalizedToolCall } from "../../../../src/core/agent-runtime/sandbox/domain/sandbox-attempt.js";
 import type { SandboxExecutionOutcome } from "../../../../src/core/agent-runtime/sandbox/domain/sandbox-result.js";
 import { AttemptPlanner } from "../../../../src/core/agent-runtime/sandbox/manager/attempt-planner.js";
@@ -99,8 +100,13 @@ function harness(
   let attempt = 0;
   const clock = { now: () => now++ };
   const ids = {
-    nextId: (kind: "attempt" | "approval-request" | "approval-grant") =>
+    nextId: (kind: "attempt" | "approval-request" | "approval-grant" | "audit") =>
       kind === "attempt" ? `attempt-${++attempt}` : `${kind}-1`,
+  };
+  const audit = {
+    record: vi.fn(async (draft: SandboxAuditEventDraft) => {
+      void draft;
+    }),
   };
   const channel = {
     requestApproval: vi.fn(async (request: ApprovalRequest) => {
@@ -115,6 +121,7 @@ function harness(
   };
   const store = new InMemoryApprovalGrantStore();
   const broker = new ApprovalBroker({
+    audit,
     channel,
     store,
     ids,
@@ -122,7 +129,11 @@ function harness(
     nonce: () => "nonce-1",
   });
   return {
-    manager: new SandboxManager(new AttemptPlanner(ids, clock), sandboxExecutor, clock, { broker }),
+    manager: new SandboxManager(new AttemptPlanner(ids, clock), sandboxExecutor, clock, {
+      audit,
+      broker,
+    }),
+    audit,
     channel,
     store,
   };
@@ -152,7 +163,7 @@ function runInput(
 describe("SandboxManager approval retry", () => {
   it("creates one approval-bound Attempt #2 with unchanged arguments", async () => {
     const sandboxExecutor = executor([deniedOutcome(), completedOutcome()]);
-    const { manager, channel, store } = harness(sandboxExecutor);
+    const { manager, audit, channel, store } = harness(sandboxExecutor);
     const consume = vi.spyOn(store, "consume");
     const call = { toolName: "exec", arguments: { command: "cat /workspace/shared.txt" } };
 
@@ -178,6 +189,15 @@ describe("SandboxManager approval retry", () => {
         expect.objectContaining({ path: "/workspace/shared.txt", access: "read" }),
       ]),
     });
+    expect(audit.record.mock.calls.map(([draft]) => draft.detail.kind)).toEqual([
+      "attempt-finished",
+      "approval-requested",
+      "approval-decided",
+      "approval-grant-issued",
+      "retry-planned",
+      "approval-grant-consumed",
+      "attempt-finished",
+    ]);
   });
 
   it("never creates Attempt #3 when Attempt #2 is also denied", async () => {
@@ -268,6 +288,44 @@ describe("SandboxManager approval retry", () => {
 
     expect(chain.retry).toEqual({ kind: "not-retried", reason: "retry-plan-invalid" });
     expect(revoke).toHaveBeenCalledOnce();
+    expect(sandboxExecutor.start).toHaveBeenCalledOnce();
+  });
+
+  it("does not consume the grant when the retry plan cannot be audited", async () => {
+    const sandboxExecutor = executor([deniedOutcome()]);
+    const { manager, audit, store } = harness(sandboxExecutor);
+    audit.record.mockImplementation(async (draft) => {
+      if (draft.detail.kind === "retry-planned") throw new Error("audit unavailable");
+    });
+    const consume = vi.spyOn(store, "consume");
+    const revoke = vi.spyOn(store, "revoke");
+
+    const chain = await manager.runWithApprovalRetry(
+      runInput({ toolName: "exec", arguments: { command: "cat /workspace/shared.txt" } }),
+    );
+
+    expect(chain.retry).toEqual({ kind: "not-retried", reason: "audit-unavailable" });
+    expect(revoke).toHaveBeenCalledOnce();
+    expect(consume).not.toHaveBeenCalled();
+    expect(sandboxExecutor.start).toHaveBeenCalledOnce();
+  });
+
+  it("does not start Attempt #2 when grant consumption cannot be audited", async () => {
+    const sandboxExecutor = executor([deniedOutcome()]);
+    const { manager, audit, store } = harness(sandboxExecutor);
+    audit.record.mockImplementation(async (draft) => {
+      if (draft.detail.kind === "approval-grant-consumed") {
+        throw new Error("audit unavailable");
+      }
+    });
+    const consume = vi.spyOn(store, "consume");
+
+    const chain = await manager.runWithApprovalRetry(
+      runInput({ toolName: "exec", arguments: { command: "cat /workspace/shared.txt" } }),
+    );
+
+    expect(chain.retry).toEqual({ kind: "not-retried", reason: "audit-unavailable" });
+    expect(consume).toHaveBeenCalledOnce();
     expect(sandboxExecutor.start).toHaveBeenCalledOnce();
   });
 });

@@ -1,9 +1,11 @@
 import { randomBytes } from "node:crypto";
 import type { ResolvedAccessSet } from "../domain/capability.js";
+import type { ApprovalAuditDecision } from "../domain/audit-event.js";
 import { immutableSnapshot } from "../domain/immutable.js";
 import { stablePolicyHash } from "../policy/policy-hash.js";
 import type { ApprovalChannelPort } from "../ports/approval-channel-port.js";
 import type { ApprovalGrantStorePort } from "../ports/approval-grant-store-port.js";
+import type { AuditPort } from "../ports/audit-port.js";
 import type { ClockPort } from "../ports/clock-port.js";
 import type { IdGeneratorPort } from "../ports/id-generator-port.js";
 import type { ApprovalGrant, ApprovalGrantBinding } from "./approval-grant.js";
@@ -20,6 +22,7 @@ type ApprovalBrokerOptions = Readonly<{
   store: ApprovalGrantStorePort;
   ids: IdGeneratorPort;
   clock: ClockPort;
+  audit: AuditPort;
   nonce?: () => string;
   ttlMs?: number;
 }>;
@@ -91,22 +94,67 @@ export class ApprovalBroker {
       requestedAt,
       expiresAt,
     });
+    if (
+      !(await this.recordAudit({
+        runtimeCallId: input.runtimeCallId,
+        detail: {
+          kind: "approval-requested",
+          requestId,
+          parentAttemptId: input.parentAttemptId,
+          argsHash: input.argsHash,
+          initialPolicyHash: input.initialPolicyHash,
+          subjectId: input.subjectId,
+          expiresAt,
+        },
+      }))
+    ) {
+      return { kind: "invalid-response" };
+    }
+    const recordDecision = (decision: ApprovalAuditDecision) =>
+      this.recordAudit({
+        runtimeCallId: input.runtimeCallId,
+        detail: {
+          kind: "approval-decided",
+          requestId,
+          parentAttemptId: input.parentAttemptId,
+          decision,
+        },
+      });
     let decision;
     try {
       decision = await this.options.channel.requestApproval(request, input.abortSignal);
     } catch {
-      return { kind: input.abortSignal?.aborted ? "cancelled" : "invalid-response" };
+      const kind = input.abortSignal?.aborted ? "cancelled" : "invalid-response";
+      await recordDecision(kind === "cancelled" ? "cancelled" : "invalid");
+      return { kind };
     }
-    if (decision.requestId !== requestId) return { kind: "invalid-response" };
-    if (decision.kind !== "approved") return { kind: decision.kind };
-    if (input.abortSignal?.aborted) return { kind: "cancelled" };
-    const issuedAt = this.options.clock.now();
-    requireTimestamp(issuedAt, "issuedAt");
-    if (issuedAt < requestedAt) return { kind: "invalid-response" };
-    if (issuedAt > expiresAt) return { kind: "expired" };
-    if (decision.subjectId !== input.subjectId || decision.nonce !== nonce) {
+    if (decision.requestId !== requestId) {
+      await recordDecision("invalid");
       return { kind: "invalid-response" };
     }
+    if (decision.kind !== "approved") {
+      if (!(await recordDecision(decision.kind))) return { kind: "invalid-response" };
+      return { kind: decision.kind };
+    }
+    if (input.abortSignal?.aborted) {
+      await recordDecision("cancelled");
+      return { kind: "cancelled" };
+    }
+    const issuedAt = this.options.clock.now();
+    requireTimestamp(issuedAt, "issuedAt");
+    if (issuedAt < requestedAt) {
+      await recordDecision("invalid");
+      return { kind: "invalid-response" };
+    }
+    if (issuedAt > expiresAt) {
+      await recordDecision("expired");
+      return { kind: "expired" };
+    }
+    if (decision.subjectId !== input.subjectId || decision.nonce !== nonce) {
+      await recordDecision("invalid");
+      return { kind: "invalid-response" };
+    }
+    if (!(await recordDecision("approved"))) return { kind: "invalid-response" };
     const grantId = this.options.ids.nextId("approval-grant");
     requireStableIdentifier("grantId", grantId);
     const grant = attachApprovalGrantHash({
@@ -123,6 +171,21 @@ export class ApprovalBroker {
       usage: "single-use",
     });
     if (!(await this.options.store.save(grant))) return { kind: "invalid-response" };
+    if (
+      !(await this.recordAudit({
+        runtimeCallId: input.runtimeCallId,
+        detail: {
+          kind: "approval-grant-issued",
+          grantId,
+          parentAttemptId: input.parentAttemptId,
+          approvalGrantHash: grant.approvalGrantHash,
+          expiresAt,
+        },
+      }))
+    ) {
+      await this.options.store.revoke(grantId);
+      return { kind: "invalid-response" };
+    }
     return immutableSnapshot({ kind: "approved", grant });
   }
 
@@ -132,5 +195,14 @@ export class ApprovalBroker {
 
   revoke(grantId: string): Promise<void> {
     return this.options.store.revoke(grantId);
+  }
+
+  private async recordAudit(draft: Parameters<AuditPort["record"]>[0]): Promise<boolean> {
+    try {
+      await this.options.audit.record(draft);
+      return true;
+    } catch {
+      return false;
+    }
   }
 }

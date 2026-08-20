@@ -11,6 +11,7 @@ import { immutableSnapshot } from "../domain/immutable.js";
 import type { SandboxExecutionOutcome } from "../domain/sandbox-result.js";
 import type { EffectiveAuthorization } from "../policy/policy-resolver.js";
 import { applyApproval } from "../policy/policy-resolver.js";
+import type { AuditPort } from "../ports/audit-port.js";
 import type { ClockPort } from "../ports/clock-port.js";
 import type {
   SandboxExecutionHandle,
@@ -35,6 +36,7 @@ export class SandboxManagerError extends Error {
 
 export type ApprovalRetryDependencies = Readonly<{
   broker: ApprovalBroker;
+  audit: AuditPort;
   controller?: RetryController;
 }>;
 
@@ -53,6 +55,7 @@ export type RetryDisposition =
         | "policy-changed"
         | "retry-target-unavailable"
         | "retry-plan-invalid"
+        | "audit-unavailable"
         | "grant-consumption-failed";
     }>;
 
@@ -161,7 +164,9 @@ export class SandboxManager {
       workspaceRoots: workspaceContext.workspaceRoots,
       networkContextId: target.networkContextId,
     });
-    return this.execute(planned, input.abortSignal);
+    const record = await this.execute(planned, input.abortSignal);
+    await this.recordAttemptFinished(record);
+    return record;
   }
 
   async runWithApprovalRetry(
@@ -261,6 +266,22 @@ export class SandboxManager {
       await this.revokeGrant(grant.grantId);
       return this.chain([initial], { kind: "not-retried", reason: "approval-cancelled" });
     }
+    if (
+      !(await this.recordRequiredAudit({
+        runtimeCallId: retry.attempt.runtimeCallId,
+        detail: {
+          kind: "retry-planned",
+          attemptId: retry.attempt.attemptId,
+          parentAttemptId: initial.attempt.attemptId,
+          approvalGrantHash: grant.approvalGrantHash,
+          compiledPolicyHash: retry.attempt.compiledPolicyHash,
+          sandboxType: retry.attempt.sandboxType,
+        },
+      }))
+    ) {
+      await this.revokeGrant(grant.grantId);
+      return this.chain([initial], { kind: "not-retried", reason: "audit-unavailable" });
+    }
     let consumed: ApprovalGrant | null;
     try {
       consumed = await broker.consume(grant.grantId, {
@@ -280,7 +301,22 @@ export class SandboxManager {
         reason: "grant-consumption-failed",
       });
     }
+    if (
+      !(await this.recordRequiredAudit({
+        runtimeCallId: retry.attempt.runtimeCallId,
+        detail: {
+          kind: "approval-grant-consumed",
+          grantId: grant.grantId,
+          attemptId: retry.attempt.attemptId,
+          parentAttemptId: initial.attempt.attemptId,
+          approvalGrantHash: grant.approvalGrantHash,
+        },
+      }))
+    ) {
+      return this.chain([initial], { kind: "not-retried", reason: "audit-unavailable" });
+    }
     const retried = await this.execute(retry, input.abortSignal);
+    await this.recordAttemptFinished(retried);
     return this.chain([initial, retried], { kind: "retry-attempted" });
   }
 
@@ -347,6 +383,51 @@ export class SandboxManager {
       await this.approvalRetry?.broker.revoke(grantId);
     } catch {
       // This manager still refuses the retry; the call-bound grant expires independently.
+    }
+  }
+
+  private async recordRequiredAudit(draft: Parameters<AuditPort["record"]>[0]): Promise<boolean> {
+    const audit = this.approvalRetry?.audit;
+    if (!audit) return false;
+    try {
+      await audit.record(draft);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async recordAttemptFinished(record: SandboxExecutionRecord): Promise<void> {
+    const terminal = record.stateHistory.at(-1);
+    if (!terminal || terminal.state.kind === "created" || terminal.state.kind === "running") return;
+    const common = {
+      kind: "attempt-finished" as const,
+      attemptId: record.attempt.attemptId,
+      ...(record.attempt.parentAttemptId
+        ? { parentAttemptId: record.attempt.parentAttemptId }
+        : {}),
+      compiledPolicyHash: record.attempt.compiledPolicyHash,
+      sandboxType: record.attempt.sandboxType,
+      state: terminal.state.kind,
+      stateObservedAt: terminal.observedAt,
+    };
+    const detail =
+      terminal.state.kind === "completed"
+        ? {
+            ...common,
+            exitCode: terminal.state.result.exitCode,
+            outputTruncated: terminal.state.result.outputTruncated,
+          }
+        : terminal.state.kind === "denied"
+          ? { ...common, evidenceRef: terminal.state.evidence.evidenceRef }
+          : { ...common, reasonCode: terminal.state.reason };
+    try {
+      await this.approvalRetry?.audit.record({
+        runtimeCallId: record.attempt.runtimeCallId,
+        detail,
+      });
+    } catch {
+      // Attempt #1 remains available; retry privilege has separate required audit barriers.
     }
   }
 

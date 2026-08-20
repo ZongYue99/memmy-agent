@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { InMemoryApprovalGrantStore } from "../../../../src/core/agent-runtime/sandbox/adapters/approval/in-memory-approval-grant-store.js";
 import { ApprovalBroker } from "../../../../src/core/agent-runtime/sandbox/approval/approval-broker.js";
 import type { ApprovalRequest } from "../../../../src/core/agent-runtime/sandbox/approval/approval-grant.js";
+import type { SandboxAuditEventDraft } from "../../../../src/core/agent-runtime/sandbox/domain/audit-event.js";
 
 function broker(
   decide: (request: ApprovalRequest) => Promise<{
@@ -13,28 +14,37 @@ function broker(
   nowValues = [1_000, 1_001, 1_002, 1_003],
 ) {
   const ids = {
-    nextId: vi.fn((kind: "attempt" | "approval-request" | "approval-grant") => `${kind}-1`),
+    nextId: vi.fn(
+      (kind: "attempt" | "approval-request" | "approval-grant" | "audit") => `${kind}-1`,
+    ),
   };
   const channel = { requestApproval: vi.fn(decide) };
+  const audit = {
+    record: vi.fn(async (draft: SandboxAuditEventDraft) => {
+      void draft;
+    }),
+  };
   const store = new InMemoryApprovalGrantStore();
   let index = 0;
   return {
     broker: new ApprovalBroker({
       channel,
+      audit,
       store,
       ids,
       clock: { now: () => nowValues[index++] ?? nowValues.at(-1)! },
       nonce: () => "nonce-1",
       ttlMs: 100,
     }),
+    audit,
     channel,
   };
 }
 
 const requestInput = {
   runtimeCallId: "call-1",
-  argsHash: "args-hash",
-  initialPolicyHash: "policy-hash",
+  argsHash: "a".repeat(64),
+  initialPolicyHash: "b".repeat(64),
   parentAttemptId: "attempt-1",
   additionalPermission: [
     { kind: "filesystem" as const, access: "read" as const, path: "/workspace/shared.txt" },
@@ -44,7 +54,11 @@ const requestInput = {
 
 describe("ApprovalBroker", () => {
   it("issues a call-bound grant that can be consumed exactly once", async () => {
-    const { broker: approvalBroker, channel } = broker(async (request) => ({
+    const {
+      broker: approvalBroker,
+      audit,
+      channel,
+    } = broker(async (request) => ({
       kind: "approved",
       requestId: request.requestId,
       subjectId: request.subjectId,
@@ -67,14 +81,19 @@ describe("ApprovalBroker", () => {
     );
     const binding = {
       runtimeCallId: "call-1",
-      argsHash: "args-hash",
-      initialPolicyHash: "policy-hash",
+      argsHash: requestInput.argsHash,
+      initialPolicyHash: requestInput.initialPolicyHash,
       parentAttemptId: "attempt-1",
       subjectId: "user-1",
       approvalGrantHash: outcome.grant.approvalGrantHash,
     };
     expect(await approvalBroker.consume(outcome.grant.grantId, binding)).toEqual(outcome.grant);
     expect(await approvalBroker.consume(outcome.grant.grantId, binding)).toBeNull();
+    expect(audit.record.mock.calls.map(([draft]) => draft.detail.kind)).toEqual([
+      "approval-requested",
+      "approval-decided",
+      "approval-grant-issued",
+    ]);
   });
 
   it("fails closed for an invalid subject or nonce", async () => {
@@ -124,6 +143,25 @@ describe("ApprovalBroker", () => {
     expect(
       await approvalBroker.requestApproval({ ...requestInput, abortSignal: controller.signal }),
     ).toEqual({ kind: "cancelled" });
+    expect(channel.requestApproval).not.toHaveBeenCalled();
+  });
+
+  it("fails closed before prompting when the approval request cannot be audited", async () => {
+    const {
+      broker: approvalBroker,
+      audit,
+      channel,
+    } = broker(async (request) => ({
+      kind: "approved",
+      requestId: request.requestId,
+      subjectId: request.subjectId,
+      nonce: request.nonce,
+    }));
+    audit.record.mockRejectedValueOnce(new Error("audit unavailable"));
+
+    expect(await approvalBroker.requestApproval(requestInput)).toEqual({
+      kind: "invalid-response",
+    });
     expect(channel.requestApproval).not.toHaveBeenCalled();
   });
 });
