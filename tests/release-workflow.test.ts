@@ -8,7 +8,9 @@ import YAML from "yaml";
 const repoRoot = resolve(import.meta.dirname, "..");
 const legacyWorkflowPath = resolve(repoRoot, ".github/workflows/github-release.yml");
 const draftWorkflowPath = resolve(repoRoot, ".github/workflows/github-draft-release-v2.yml");
+const releaseCompareScriptPath = resolve(repoRoot, "scripts/build-release-compare.mjs");
 const draftSource = readFileSync(draftWorkflowPath, "utf8");
+const releaseCompareSource = readFileSync(releaseCompareScriptPath, "utf8");
 const draftWorkflow = YAML.parse(draftSource);
 const draftJob = draftWorkflow.jobs.release;
 const draftSteps = draftJob.steps as Array<Record<string, unknown>>;
@@ -99,19 +101,97 @@ describe("Memmy release workflow metadata", () => {
     expect(result.status).toBe(1);
   });
 
-  it("embeds the repository .env required by packaged desktop runtimes", () => {
+  it("keeps repository and dependency env files outside packaged desktop artifacts", () => {
     for (const config of packagingConfigs) {
       const packagingSource = readFileSync(
         resolve(repoRoot, `App/shell/desktop/${config}`),
         "utf8",
       );
-      expect(packagingSource).toMatch(/from:\s+\.\.\/\.\.\/\.\.\/\.env(?:\s|$)/);
-      expect(packagingSource).toMatch(/to:\s+\.env(?:\s|$)/);
+      expect(packagingSource).not.toMatch(/from:\s+\.\.\/\.\.\/\.\.\/\.env(?:\s|$)/);
+      expect(packagingSource).not.toMatch(/to:\s+\.env(?:\s|$)/);
+      expect(packagingSource).toContain('- "!**/.env"');
+      expect(packagingSource).toContain('- "!**/.env.*"');
+    }
+
+    const macSource = readFileSync(resolve(repoRoot, "scripts/internal/mac/build-dmg.sh"), "utf8");
+    const winSource = readFileSync(resolve(repoRoot, "scripts/internal/win/build-nsis.sh"), "utf8");
+    for (const source of [macSource, winSource]) {
+      expect(source).toContain("write-desktop-edition-manifest.mjs");
+      expect(source).toContain("prune-runtime-env-files.mjs");
+      expect(source).toContain("verify-package-version.mjs");
     }
   });
 });
 
 describe("GitHub Draft Release v2 workflow", () => {
+  it("builds an uncapped, NUL-safe comparison from the trusted local Git graph", () => {
+    const tempDir = mkdtempSync(resolve(tmpdir(), "memmy-release-compare-"));
+    const git = (args: string[]) =>
+      spawnSync("git", args, { cwd: tempDir, encoding: "utf8" });
+
+    expect(git(["init", "--initial-branch=main"]).status).toBe(0);
+    expect(git(["config", "user.name", "Release Test"]).status).toBe(0);
+    expect(git(["config", "user.email", "release-test@example.invalid"]).status).toBe(0);
+    writeFileSync(resolve(tempDir, "base file.txt"), "base\n");
+    expect(git(["add", "."]).status).toBe(0);
+    expect(git(["commit", "-m", "base"]).status).toBe(0);
+    const baseSha = git(["rev-parse", "HEAD"]).stdout.trim();
+
+    for (let index = 0; index < 301; index += 1) {
+      writeFileSync(resolve(tempDir, `bulk-${String(index).padStart(3, "0")}.txt`), `${index}\n`);
+    }
+    expect(git(["add", "."]).status).toBe(0);
+    expect(git(["commit", "-m", "add more than 300 files"]).status).toBe(0);
+    expect(git(["mv", "base file.txt", "renamed file.txt"]).status).toBe(0);
+    writeFileSync(resolve(tempDir, "bulk-000.txt"), "updated\n");
+    expect(git(["add", "."]).status).toBe(0);
+    expect(git(["commit", "-m", "rename and update"]).status).toBe(0);
+    const targetSha = git(["rev-parse", "HEAD"]).stdout.trim();
+    const outputPath = resolve(tempDir, "compare.json");
+
+    const result = spawnSync(
+      "node",
+      [
+        releaseCompareScriptPath,
+        "--base",
+        baseSha,
+        "--target",
+        targetSha,
+        "--repository",
+        "MemTensor/memmy-agent",
+        "--output",
+        outputPath,
+      ],
+      { cwd: tempDir, encoding: "utf8" },
+    );
+    expect(result.status, result.stderr).toBe(0);
+
+    const comparison = JSON.parse(readFileSync(outputPath, "utf8"));
+    expect(comparison.total_commits).toBe(2);
+    expect(comparison.commits).toHaveLength(2);
+    expect(comparison.files).toHaveLength(302);
+    expect(comparison.files).toContainEqual(
+      expect.objectContaining({
+        filename: "renamed file.txt",
+        previous_filename: "base file.txt",
+        status: "renamed",
+      }),
+    );
+    expect(comparison.snapshot).toEqual({
+      source: "local-git",
+      complete: true,
+      baseSha,
+      targetSha,
+      commitCount: 2,
+      changedFileCount: 302,
+    });
+
+    expect(releaseCompareSource).toContain('"--reverse"');
+    expect(releaseCompareSource).toContain('"--name-status", "-z"');
+    expect(releaseCompareSource).toContain('"--numstat", "-z"');
+    expect(releaseCompareSource).toContain('"merge-base", "--is-ancestor"');
+  });
+
   it("keeps every shell block syntactically valid", () => {
     const tempDir = mkdtempSync(resolve(tmpdir(), "memmy-release-workflow-"));
 
@@ -153,7 +233,7 @@ describe("GitHub Draft Release v2 workflow", () => {
     }
   });
 
-  it("creates Draft Releases from merged vX.Y.Z PRs and keeps manual fallback", () => {
+  it("creates Draft Releases only from merged release/vX.Y.Z PRs and keeps manual fallback", () => {
     expect(draftWorkflow.on.pull_request_target).toEqual({
       types: ["closed"],
       branches: ["main"],
@@ -167,17 +247,22 @@ describe("GitHub Draft Release v2 workflow", () => {
       "full",
     ]);
     expect(draftWorkflow.on.workflow_dispatch.inputs.create_draft.default).toBe(false);
-    expect(draftJob.if).toContain("github.event.pull_request.merged == true");
-    expect(draftJob.if).toContain("startsWith(github.event.pull_request.head.ref, 'v')");
-    expect(draftJob.if).toContain("startsWith(github.event.pull_request.head.ref, 'release/v')");
+    const normalizedJobCondition = String(draftJob.if).replace(/\s+/g, " ").trim();
+    expect(normalizedJobCondition).toBe(
+      "github.event_name == 'workflow_dispatch' || " +
+      "(github.event.pull_request.merged == true && " +
+      "github.event.pull_request.head.repo.full_name == github.repository && " +
+      "startsWith(github.event.pull_request.head.ref, 'release/v'))",
+    );
 
     const resolve = draftScript("Resolve and validate release");
     expect(resolve).toContain('if [[ "$EVENT_NAME" == "pull_request_target" ]]');
     expect(resolve).toContain(
-      "^(release/)?v((0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*))$",
+      "^release/v((0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*))$",
     );
-    expect(resolve).toContain("vX.Y.Z or release/vX.Y.Z");
-    expect(resolve).toContain('version="${BASH_REMATCH[2]}"');
+    expect(resolve).toContain("Release branch must match release/vX.Y.Z");
+    expect(resolve).not.toContain("vX.Y.Z or release/vX.Y.Z");
+    expect(resolve).toContain('version="${BASH_REMATCH[1]}"');
     expect(resolve).toContain('target_sha="$PR_MERGE_SHA"');
     expect(resolve).toContain('preflight_level="full"');
     expect(resolve).toContain('create_draft="true"');
@@ -289,8 +374,37 @@ describe("GitHub Draft Release v2 workflow", () => {
     expect(download).toContain("SHA256SUMS.txt");
   });
 
+  it("does not expect a nonexistent head_commit in GitHub Compare metadata", () => {
+    const realCompareMetadataShape = {
+      base_commit: { sha: "base-sha" },
+      merge_base_commit: { sha: "base-sha" },
+      status: "ahead",
+      ahead_by: 2,
+      behind_by: 0,
+      total_commits: 2,
+      commits: [{ sha: "first-commit" }],
+      files: [],
+    };
+    expect(realCompareMetadataShape).not.toHaveProperty("head_commit");
+
+    const snapshot = draftScript("Build complete release change snapshot");
+    expect(snapshot).not.toContain("api_head=");
+    expect(snapshot).not.toContain(
+      "'.head_commit.sha // empty' release-assets/COMPARE_METADATA.json",
+    );
+    expect(snapshot).toContain('"repos/${GITHUB_REPOSITORY}/commits/${TARGET_SHA}"');
+    expect(snapshot).toContain("TARGET_COMMIT_METADATA.json");
+    expect(snapshot).toContain("Release target metadata failed");
+    expect(snapshot).toContain("api_target");
+    expect(snapshot).toContain('"$api_target" != "$TARGET_SHA"');
+    expect(snapshot).toContain(
+      "'.head_commit.sha // empty' release-assets/COMPARE.json",
+    );
+  });
+
   it("records independently auditable commits, PRs, files, versions, and assets", () => {
     for (const stepName of [
+      "Build complete release change snapshot",
       "Build release notes",
       "Build auditable release evidence",
     ]) {
@@ -332,14 +446,19 @@ describe("GitHub Draft Release v2 workflow", () => {
     expect(releaseNotes).toContain("QUALITY_REPORT.json");
     expect(releaseNotes).not.toContain("releases/generate-notes");
     expect(releaseNotes).not.toContain("github-generated");
+    const snapshot = draftScript("Build complete release change snapshot");
+    expect(snapshot).toContain("git merge-base --is-ancestor");
+    expect(snapshot).toContain("scripts/build-release-compare.mjs");
+    expect(snapshot).toContain("COMPARE_METADATA.json");
+    expect(snapshot).toContain("api_merge_base");
+    expect(snapshot).toContain("api_total");
+    expect(snapshot).toContain("gh api --paginate");
+    expect(snapshot).toContain("?per_page=100");
+    expect(snapshot).toContain("remoteMetadataValidated");
     const evidence = draftScript("Build auditable release evidence");
-    expect(evidence).toContain("compare/${compare_base}...${TARGET_SHA}");
-    expect(evidence).toContain("commits/${commit_sha}/pulls");
-    expect(evidence).toContain("Release compare failed");
-    expect(evidence).toContain("Release compare is truncated");
-    expect(evidence).toContain("Release diff is too large");
+    expect(evidence).toContain("Complete release snapshot is missing");
+    expect(evidence).toContain("Release snapshot is incomplete");
     expect(evidence).toContain("Release compare target mismatch");
-    expect(evidence).toContain("Pull request evidence failed");
     expect(evidence).toContain("memmy.release.evidence.v2");
     expect(evidence).toContain("changedFiles");
     expect(evidence).toContain("versionFiles");
@@ -355,6 +474,10 @@ describe("GitHub Draft Release v2 workflow", () => {
     expect(JSON.stringify(uploadAudit)).toContain("RELEASE_NOTES.md");
     expect(JSON.stringify(uploadAudit)).toContain("RELEASE_NOTES_SOURCE.json");
     expect(JSON.stringify(uploadAudit)).toContain("QUALITY_REPORT.json");
+    expect(JSON.stringify(uploadAudit)).toContain("COMPARE_METADATA.json");
+    expect(JSON.stringify(uploadAudit)).toContain("TARGET_COMMIT_METADATA.json");
+    expect(JSON.stringify(uploadAudit)).toContain("COMPARE.json");
+    expect(JSON.stringify(uploadAudit)).toContain("PULL_REQUESTS.json");
     expect(draftScript("Create draft release and upload every asset")).toContain(
       "RELEASE_EVIDENCE.json",
     );
@@ -379,15 +502,18 @@ describe("GitHub Draft Release v2 workflow", () => {
     expect(create).toContain("trap - EXIT");
   });
 
-  it("uses the release environment, minimal permissions, and per-version concurrency", () => {
+  it("uses the release environment, minimal permissions, and global non-cancelling concurrency", () => {
     expect(draftWorkflow.permissions).toEqual({
       contents: "write",
       "pull-requests": "read",
     });
     expect(draftJob.environment).toBe("release");
-    expect(draftWorkflow.concurrency["cancel-in-progress"]).toBe(false);
-    expect(draftWorkflow.concurrency.group).toContain("inputs.version");
-    expect(draftWorkflow.concurrency.group).toContain("pull_request.head.ref");
+    expect(draftWorkflow.concurrency).toBeUndefined();
+    expect(draftJob.concurrency).toEqual({
+      group: "draft-release-v2",
+      "cancel-in-progress": false,
+      queue: "max",
+    });
   });
 
   it("records the manual Publish boundary in the workflow summary", () => {

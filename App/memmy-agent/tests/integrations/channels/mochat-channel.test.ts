@@ -57,11 +57,11 @@ function channel(config: Record<string, any>, bus = new MessageBus()): MochatCha
 }
 
 async function waitForSocket(): Promise<any> {
-  for (let i = 0; i < 50; i += 1) {
-    if (socketMocks.sockets[0]) return socketMocks.sockets[0];
-    await new Promise((resolve) => setImmediate(resolve));
-  }
-  throw new Error("socket.io client was not created");
+  await vi.waitFor(
+    () => expect(socketMocks.sockets[0]).toBeDefined(),
+    { timeout: 5000, interval: 10 },
+  );
+  return socketMocks.sockets[0];
 }
 
 afterEach(() => {

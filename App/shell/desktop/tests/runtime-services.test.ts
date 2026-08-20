@@ -9,13 +9,20 @@ import YAML from "yaml";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   AgentGatewaySupervisor,
+  ensureMemoryService,
   preparePackagedBrowser,
   preparePackagedRuntimeConfig,
+  readLiveMemoryServerLock,
+  resolveDevelopmentRuntimeExecutable,
+  resolveDevelopmentRuntimeEntryPaths,
   resolvePackagedRuntimeMigrationTargets,
+  resolveRuntimeEntryPaths,
   runPackagedMigrationCommand,
   restartExternalMemoryService,
   spawnNodeService,
+  startAgentGatewayWithRecovery,
   startPackagedBrowserPreparation,
+  stopManagedChild,
   syncBundledAgentSkills,
   type ManagedChild,
   type PackagedRuntimeConfig,
@@ -302,6 +309,87 @@ describe("packaged desktop runtime config", () => {
     await expect(stat(join(memmyHome, "memory-service"))).resolves.toBeTruthy();
     expect(recordValue(recordValue(config, "agents"), "defaults")).not.toHaveProperty("model");
     expect(recordValue(recordValue(config, "agents"), "defaults")).not.toHaveProperty("provider");
+  });
+
+  it("recognizes a live Memory server lock for the configured sqlite database", async () => {
+    const root = await makeTempRoot();
+    const databasePath = join(root, "memory.sqlite");
+    await writeFile(`${databasePath}.server.lock`, JSON.stringify({
+      pid: process.pid,
+      host: "127.0.0.1",
+      port: 18960,
+      sqlitePath: databasePath
+    }));
+
+    expect(readLiveMemoryServerLock(databasePath)).toEqual({
+      pid: process.pid,
+      host: "127.0.0.1",
+      port: 18960,
+      sqlitePath: databasePath
+    });
+  });
+
+  it("ignores a Memory server lock that names another sqlite database", async () => {
+    const root = await makeTempRoot();
+    const databasePath = join(root, "memory.sqlite");
+    await writeFile(`${databasePath}.server.lock`, JSON.stringify({
+      pid: process.pid,
+      sqlitePath: join(root, "other.sqlite")
+    }));
+
+    expect(readLiveMemoryServerLock(databasePath)).toBeNull();
+  });
+
+  it("waits for and reuses a live locked Memory service instead of spawning another", async () => {
+    const root = await makeTempRoot();
+    const databasePath = join(root, "memory.sqlite");
+    const reservation = createServer();
+    await new Promise<void>((resolveListen) => reservation.listen(0, "127.0.0.1", resolveListen));
+    const address = reservation.address();
+    if (!address || typeof address === "string") throw new Error("expected TCP address");
+    const port = address.port;
+    await new Promise<void>((resolveClose) => reservation.close(() => resolveClose()));
+    await writeFile(`${databasePath}.server.lock`, JSON.stringify({
+      pid: process.pid,
+      host: "127.0.0.1",
+      port,
+      sqlitePath: databasePath
+    }));
+
+    const server = createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ ok: true }));
+    });
+    testServers.push(server);
+    setTimeout(() => server.listen(port, "127.0.0.1"), 100);
+    const children: ManagedChild[] = [];
+
+    await ensureMemoryService(
+      { memoryEntry: join(root, "missing-memory.js"), agentEntry: join(root, "missing-agent.js") },
+      {
+        configPath: join(root, "config.yaml"),
+        agentWorkspace: join(root, "workspace"),
+        memoryDatabasePath: databasePath,
+        memoryBaseUrl: `http://127.0.0.1:${port}`,
+        memoryToken: "",
+        memoryListenHost: "127.0.0.1",
+        memoryListenPort: port,
+        agentGatewayBaseUrl: "http://127.0.0.1:18980",
+        agentGatewayHealthHost: "127.0.0.1",
+        agentGatewayHealthPort: 18970,
+        agentGatewayBootstrapSecret: "secret"
+      },
+      children,
+      {
+        appPath: root,
+        appDatabaseFile: join(root, "app.sqlite"),
+        resourcesPath: root,
+        logDirectory: root,
+        logLevel: "info"
+      }
+    );
+
+    expect(children).toHaveLength(0);
   });
 
   it("rereads the migrated workspace instead of pinning the pre-migration legacy value", async () => {
@@ -752,6 +840,89 @@ describe("AgentGatewaySupervisor", () => {
     expect(harness.supervisor.restartTimer).toBeNull();
   });
 
+  it("keeps retrying after an explicitly recoverable initial startup failure", async () => {
+    vi.useFakeTimers();
+    const waitForHttpService = vi.fn()
+      .mockRejectedValueOnce(new Error("invalid runtime config"))
+      .mockRejectedValueOnce(new Error("runtime config is still invalid"))
+      .mockResolvedValueOnce(undefined);
+    const harness = createSupervisorHarness({
+      waitForHttpService,
+      stopManagedChild: vi.fn(async (child: ManagedChild) => {
+        emitChildClose(child, 1);
+      })
+    });
+
+    await expect(harness.supervisor.ensureStarted()).rejects.toThrow("invalid runtime config");
+    harness.supervisor.startRecovery();
+    await vi.advanceTimersByTimeAsync(249);
+    expect(harness.spawn).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(harness.spawn).toHaveBeenCalledTimes(2);
+    expect(harness.supervisor.hasReachedReady).toBe(false);
+    await vi.advanceTimersByTimeAsync(999);
+    expect(harness.spawn).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(harness.spawn).toHaveBeenCalledTimes(3);
+    expect(harness.supervisor.hasReachedReady).toBe(true);
+    expect(harness.supervisor.restartTimer).toBeNull();
+  });
+
+  it("cancels pending initial recovery during shutdown", async () => {
+    vi.useFakeTimers();
+    const harness = createSupervisorHarness({
+      waitForHttpService: vi.fn(async () => {
+        throw new Error("invalid runtime config");
+      }),
+      stopManagedChild: vi.fn(async (child: ManagedChild) => {
+        emitChildClose(child, 1);
+      })
+    });
+
+    await expect(harness.supervisor.ensureStarted()).rejects.toThrow("invalid runtime config");
+    harness.supervisor.startRecovery();
+    await harness.supervisor.close();
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(harness.spawn).toHaveBeenCalledTimes(1);
+    expect(harness.supervisor.restartTimer).toBeNull();
+  });
+
+  it("contains the initial Agent failure and enables background recovery", async () => {
+    const failure = new Error("invalid runtime config");
+    const supervisor = {
+      ensureStarted: vi.fn(async () => {
+        throw failure;
+      }),
+      startRecovery: vi.fn()
+    };
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    await expect(startAgentGatewayWithRecovery(supervisor)).resolves.toBeNull();
+
+    expect(supervisor.startRecovery).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(
+      "Agent gateway unavailable during desktop startup: invalid runtime config"
+    );
+  });
+
+  it("classifies a rejected model config without exposing the startup error", async () => {
+    const supervisor = {
+      ensureStarted: vi.fn(async () => {
+        throw new Error(
+          "agent-gateway exited before it became ready (code 1). stderr: memmy: Failed to load config from C:/Memmy/config.yaml: providers current contract does not accept legacy field 'apiBase'"
+        );
+      }),
+      startRecovery: vi.fn()
+    };
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    await expect(startAgentGatewayWithRecovery(supervisor)).resolves.toBe("model_config_invalid");
+    expect(supervisor.startRecovery).toHaveBeenCalledTimes(1);
+  });
+
   it("restarts an owned gateway with bounded escalating delays and ignores old child callbacks", async () => {
     vi.useFakeTimers();
     const harness = createSupervisorHarness();
@@ -974,6 +1145,24 @@ describe("spawnNodeService 落盘与 env 注入", () => {
     expect(await readFile(logFile, "utf8")).toContain("hello-from-child");
   });
 
+  it("把 Agent Gateway 子进程 stderr 落盘到 agent-gateway.log", async () => {
+    const root = await makeTempRoot();
+    const entry = join(root, "entry.js");
+    await writeFile(entry, "process.stderr.write('[session-dag] compaction failed SQLITE_CANTOPEN\\n');\n");
+    const logFile = join(root, "agent-gateway.log");
+
+    const managed = spawnNodeService("agent-gateway", entry, [], {}, {
+      logFilePath: logFile,
+      logLevel: "info"
+    });
+    await new Promise<void>((done) => managed.process.once("exit", () => done()));
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
+
+    const logText = await readFile(logFile, "utf8");
+    expect(logText).toContain("[session-dag] compaction failed");
+    expect(logText).toContain("SQLITE_CANTOPEN");
+  });
+
   it("把 MEMMY_LOG_LEVEL 注入子进程环境", async () => {
     const root = await makeTempRoot();
     const entry = join(root, "entry.js");
@@ -988,6 +1177,25 @@ describe("spawnNodeService 落盘与 env 注入", () => {
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
 
     expect(await readFile(logFile, "utf8")).toContain("debug");
+  });
+
+  it("强杀后等待 Memory 子进程真正退出", async () => {
+    const root = await makeTempRoot();
+    const entry = join(root, "stubborn-memory.js");
+    await writeFile(entry, [
+      "process.on('SIGTERM', () => {});",
+      "process.stdout.write('ready\\n');",
+      "setInterval(() => {}, 1000);"
+    ].join("\n"));
+    const managed = spawnNodeService("memory", entry, [], {}, {
+      logFilePath: join(root, "stubborn-memory.log"),
+      logLevel: "info"
+    });
+    await new Promise<void>((ready) => managed.process.stdout?.once("data", () => ready()));
+
+    await stopManagedChild(managed);
+
+    expect(managed.exitDescription).toBe("signal SIGKILL");
   });
 });
 

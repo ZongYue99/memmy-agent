@@ -527,7 +527,18 @@ describe("MemoryService / evolution / orchestration", () => {
   });
 
   it("queues L3 abstraction and skill crystallization when L2 association activates a candidate policy", async () => {
-    const { db, service } = createTestService();
+    const { db, service } = createTestService({
+      config: {
+        ...DEFAULT_MEMMY_CONFIG,
+        algorithm: {
+          ...DEFAULT_MEMMY_CONFIG.algorithm,
+          l2Induction: {
+            ...DEFAULT_MEMMY_CONFIG.algorithm.l2Induction,
+            minEpisodesForActivation: 2
+          }
+        }
+      }
+    });
     const session = service.openSession({
       namespace: {
         source: "codex",

@@ -1,8 +1,8 @@
 name: GitHub Draft Release v2
 
 on:
-  # Use the base repository's trusted workflow so release PRs from forks can
-  # create an auditable Draft Release without executing untrusted fork code.
+  # Use the base repository's trusted workflow and admit only its canonical
+  # release branches in the job guard below.
   pull_request_target:
     types: [closed]
     branches: [main]
@@ -34,17 +34,19 @@ permissions:
   contents: write
   pull-requests: read
 
-concurrency:
-  group: draft-release-v2-${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.event.pull_request.head.ref }}
-  cancel-in-progress: false
-
 jobs:
   release:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event.pull_request.merged == true &&
-       (startsWith(github.event.pull_request.head.ref, 'v') ||
-        startsWith(github.event.pull_request.head.ref, 'release/v')))
+       github.event.pull_request.head.repo.full_name == github.repository &&
+       startsWith(github.event.pull_request.head.ref, 'release/v'))
+    concurrency:
+      # Tag and Draft Release mutations are repository-global. Queue automatic
+      # and manual recovery runs so they cannot mutate assets concurrently.
+      group: draft-release-v2
+      cancel-in-progress: false
+      queue: max
     runs-on: ubuntu-latest
     environment: release
     env:
@@ -67,11 +69,11 @@ jobs:
           create_draft="false"
           manual_target_sha_supplied="false"
           if [[ "$EVENT_NAME" == "pull_request_target" ]]; then
-            if [[ ! "$PR_HEAD_REF" =~ ^(release/)?v((0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*))$ ]]; then
-              echo "Release branch must match vX.Y.Z or release/vX.Y.Z" >&2
+            if [[ ! "$PR_HEAD_REF" =~ ^release/v((0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*))$ ]]; then
+              echo "Release branch must match release/vX.Y.Z" >&2
               exit 1
             fi
-            version="${BASH_REMATCH[2]}"
+            version="${BASH_REMATCH[1]}"
             target_sha="$PR_MERGE_SHA"
             preflight_level="full"
             create_draft="true"
@@ -280,6 +282,105 @@ jobs:
           fi
           echo "previous_tag=$previous_tag" >> "$GITHUB_OUTPUT"
 
+      - name: Build complete release change snapshot
+        if: ${{ steps.release.outputs.preflight_level == 'full' }}
+        env:
+          TARGET_SHA: ${{ steps.release.outputs.target_sha }}
+          PREVIOUS_TAG: ${{ steps.previous.outputs.previous_tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+
+          compare_base="$PREVIOUS_TAG"
+          if [[ -z "$compare_base" ]]; then
+            compare_base="$(git rev-list --max-parents=0 "$TARGET_SHA" | head -n 1)"
+          fi
+          test -n "$compare_base"
+          base_sha="$(git rev-parse "$compare_base^{commit}")"
+
+          if ! git merge-base --is-ancestor "$base_sha" "$TARGET_SHA"; then
+            echo "::error title=Release history is not linear::$compare_base ($base_sha) is not an ancestor of $TARGET_SHA. Manual recovery: integrate the previous stable release into the release branch before retrying." >&2
+            exit 1
+          fi
+
+          if ! gh api --method GET \
+            "repos/${GITHUB_REPOSITORY}/compare/${base_sha}...${TARGET_SHA}?per_page=1&page=1" \
+            > release-assets/COMPARE_METADATA.json; then
+            echo "::error title=Release compare metadata failed::Could not validate ${base_sha}...${TARGET_SHA} against GitHub. Manual recovery: confirm both commits are reachable in the repository, then retry." >&2
+            exit 1
+          fi
+          # GitHub Compare metadata has no top-level head_commit field. Validate
+          # the remote target through the exact commit endpoint instead.
+          if ! gh api --method GET \
+            "repos/${GITHUB_REPOSITORY}/commits/${TARGET_SHA}" \
+            > release-assets/TARGET_COMMIT_METADATA.json; then
+            echo "::error title=Release target metadata failed::Could not validate target commit ${TARGET_SHA} against GitHub. Manual recovery: confirm the merged main commit is reachable in the repository, then retry." >&2
+            exit 1
+          fi
+
+          node scripts/build-release-compare.mjs \
+            --base "$base_sha" \
+            --target "$TARGET_SHA" \
+            --repository "$GITHUB_REPOSITORY" \
+            --output release-assets/COMPARE.json
+
+          api_base="$(jq -r '.base_commit.sha // empty' release-assets/COMPARE_METADATA.json)"
+          api_merge_base="$(jq -r '.merge_base_commit.sha // empty' release-assets/COMPARE_METADATA.json)"
+          api_target="$(jq -r '.sha // empty' release-assets/TARGET_COMMIT_METADATA.json)"
+          api_status="$(jq -r '.status // empty' release-assets/COMPARE_METADATA.json)"
+          api_ahead="$(jq -r '.ahead_by // -1' release-assets/COMPARE_METADATA.json)"
+          api_behind="$(jq -r '.behind_by // -1' release-assets/COMPARE_METADATA.json)"
+          api_total="$(jq -r '.total_commits // -1' release-assets/COMPARE_METADATA.json)"
+          local_total="$(jq -r '.commits | length' release-assets/COMPARE.json)"
+          local_files="$(jq -r '.files | length' release-assets/COMPARE.json)"
+          local_head="$(jq -r '.head_commit.sha // empty' release-assets/COMPARE.json)"
+
+          if [[ "$api_base" != "$base_sha" || "$api_merge_base" != "$base_sha" || "$api_target" != "$TARGET_SHA" || "$local_head" != "$TARGET_SHA" ]]; then
+            echo "::error title=Release comparison identity mismatch::GitHub and the trusted checkout do not agree on the base, merge base, or target. Manual recovery: refresh the target checkout and retry without changing the tag." >&2
+            exit 1
+          fi
+          if [[ "$api_status" != "ahead" || "$api_behind" != "0" || "$api_ahead" != "$api_total" || "$local_total" != "$api_total" ]]; then
+            echo "::error title=Release comparison count mismatch::GitHub reports status=$api_status ahead=$api_ahead behind=$api_behind total=$api_total, while the trusted checkout contains $local_total commits. Manual recovery: inspect branch ancestry and API consistency before retrying." >&2
+            exit 1
+          fi
+
+          jq \
+            --argjson apiTotalCommits "$api_total" \
+            --argjson changedFileCount "$local_files" \
+            '.snapshot.remoteMetadataValidated = true
+             | .snapshot.apiTotalCommits = $apiTotalCommits
+             | .snapshot.changedFileCount = $changedFileCount' \
+            release-assets/COMPARE.json > release-assets/COMPARE.complete.json
+          mv release-assets/COMPARE.complete.json release-assets/COMPARE.json
+
+          : > release-assets/PULL_REQUESTS.jsonl
+          while IFS= read -r commit_sha; do
+            if ! gh api --paginate \
+              -H "Accept: application/vnd.github+json" \
+              "repos/${GITHUB_REPOSITORY}/commits/${commit_sha}/pulls?per_page=100" \
+              --jq '.[] | {
+                number,
+                title,
+                htmlUrl: .html_url,
+                mergedAt: .merged_at,
+                baseRef: .base.ref,
+                headRef: .head.ref
+              }' >> release-assets/PULL_REQUESTS.jsonl; then
+              echo "::error title=Pull request evidence failed::Could not fetch associated PRs for commit $commit_sha. Manual recovery: re-run after GitHub API recovers or inspect the commit manually." >&2
+              exit 1
+            fi
+          done < <(jq -r '.commits[].sha' release-assets/COMPARE.json)
+          jq -s 'unique_by(.number) | sort_by(.number)' \
+            release-assets/PULL_REQUESTS.jsonl > release-assets/PULL_REQUESTS.json
+
+          {
+            echo "## Complete release change snapshot"
+            echo
+            echo "- Commits: $local_total (cross-checked with GitHub)"
+            echo "- Changed files: $local_files (from the trusted local Git graph)"
+            echo "- Pull requests: $(jq 'length' release-assets/PULL_REQUESTS.json)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Download and verify OSS artifacts
         if: ${{ steps.release.outputs.preflight_level == 'full' }}
         env:
@@ -364,48 +465,19 @@ jobs:
               '{ok: true, needs_review: false, source: $source, manual_file: $file, warnings: []}' \
               > release-assets/QUALITY_REPORT.json
           else
-            compare_base="$PREVIOUS_TAG"
-            if [[ -z "$compare_base" ]]; then
-              compare_base="$(git rev-list --max-parents=0 "$TARGET_SHA" | head -n 1)"
-            fi
-            test -n "$compare_base"
-
-            if ! gh api "repos/${GITHUB_REPOSITORY}/compare/${compare_base}...${TARGET_SHA}" \
-              > release-assets/DRAFT_COMPARE.json; then
-              echo "::error title=Draft evidence compare failed::Could not compare ${compare_base}...${TARGET_SHA}. Manual recovery: confirm previous tag and target SHA are reachable, then re-run." >&2
-              exit 1
-            fi
-            total_commits="$(jq -r '.total_commits // (.commits | length)' release-assets/DRAFT_COMPARE.json)"
+            cp release-assets/COMPARE.json release-assets/DRAFT_COMPARE.json
+            cp release-assets/PULL_REQUESTS.json release-assets/DRAFT_PULL_REQUESTS.json
+            total_commits="$(jq -r '.total_commits' release-assets/DRAFT_COMPARE.json)"
             received_commits="$(jq -r '.commits | length' release-assets/DRAFT_COMPARE.json)"
             compare_head="$(jq -r '.head_commit.sha // empty' release-assets/DRAFT_COMPARE.json)"
             if [[ "$total_commits" != "$received_commits" ]]; then
-              echo "::error title=Draft evidence is truncated::GitHub returned $received_commits of $total_commits commits. Manual recovery: reduce release scope or inspect compare evidence manually before retrying." >&2
+              echo "::error title=Draft evidence snapshot is incomplete::The trusted snapshot records $received_commits of $total_commits commits. Manual recovery: rebuild the complete local release change snapshot before retrying." >&2
               exit 1
             fi
             if [[ "$compare_head" != "$TARGET_SHA" ]]; then
               echo "::error title=Draft evidence target mismatch::Compare head $compare_head does not match target $TARGET_SHA. Manual recovery: verify the previous tag and release target." >&2
               exit 1
             fi
-
-            : > release-assets/DRAFT_PULL_REQUESTS.jsonl
-            while IFS= read -r commit_sha; do
-              if ! gh api \
-                -H "Accept: application/vnd.github+json" \
-                "repos/${GITHUB_REPOSITORY}/commits/${commit_sha}/pulls" \
-                --jq '.[] | {
-                  number,
-                  title,
-                  htmlUrl: .html_url,
-                  mergedAt: .merged_at,
-                  baseRef: .base.ref,
-                  headRef: .head.ref
-                }' >> release-assets/DRAFT_PULL_REQUESTS.jsonl; then
-                echo "::error title=Draft PR evidence failed::Could not fetch associated PRs for commit $commit_sha. Manual recovery: re-run after GitHub API recovers or inspect the commit manually." >&2
-                exit 1
-              fi
-            done < <(jq -r '.commits[].sha' release-assets/DRAFT_COMPARE.json)
-            jq -s 'unique_by(.number) | sort_by(.number)' \
-              release-assets/DRAFT_PULL_REQUESTS.jsonl > release-assets/DRAFT_PULL_REQUESTS.json
 
             jq -Rn '
               [inputs
@@ -668,48 +740,23 @@ jobs:
           fi
           test -n "$compare_base"
 
-          if ! gh api "repos/${GITHUB_REPOSITORY}/compare/${compare_base}...${TARGET_SHA}" \
-            > release-assets/COMPARE.json; then
-            echo "::error title=Release compare failed::Could not compare ${compare_base}...${TARGET_SHA}. Manual recovery: confirm previous tag and target SHA are reachable, then re-run." >&2
+          if [[ ! -s release-assets/COMPARE.json || ! -s release-assets/PULL_REQUESTS.json ]]; then
+            echo "::error title=Complete release snapshot is missing::The shared comparison or pull-request evidence was not produced. Manual recovery: rebuild the complete release change snapshot before retrying." >&2
             exit 1
           fi
 
-          total_commits="$(jq -r '.total_commits // (.commits | length)' release-assets/COMPARE.json)"
+          total_commits="$(jq -r '.total_commits' release-assets/COMPARE.json)"
           received_commits="$(jq -r '.commits | length' release-assets/COMPARE.json)"
           changed_file_count="$(jq -r '.files | length' release-assets/COMPARE.json)"
           compare_head="$(jq -r '.head_commit.sha // empty' release-assets/COMPARE.json)"
           if [[ "$total_commits" != "$received_commits" ]]; then
-            echo "::error title=Release compare is truncated::GitHub returned $received_commits of $total_commits commits. Manual recovery: reduce release scope or inspect compare evidence manually before retrying." >&2
-            exit 1
-          fi
-          if [[ "$changed_file_count" -ge 300 ]]; then
-            echo "::error title=Release diff is too large::Compare contains $changed_file_count changed files. Manual recovery: split the release or perform manual evidence review." >&2
+            echo "::error title=Release snapshot is incomplete::The trusted snapshot records $received_commits of $total_commits commits. Manual recovery: rebuild the complete local release change snapshot before retrying." >&2
             exit 1
           fi
           if [[ "$compare_head" != "$TARGET_SHA" ]]; then
             echo "::error title=Release compare target mismatch::Compare head $compare_head does not match target $TARGET_SHA. Manual recovery: verify the previous tag and release target." >&2
             exit 1
           fi
-
-          : > release-assets/PULL_REQUESTS.jsonl
-          while IFS= read -r commit_sha; do
-            if ! gh api \
-              -H "Accept: application/vnd.github+json" \
-              "repos/${GITHUB_REPOSITORY}/commits/${commit_sha}/pulls" \
-              --jq '.[] | {
-                number,
-                title,
-                htmlUrl: .html_url,
-                mergedAt: .merged_at,
-                baseRef: .base.ref,
-                headRef: .head.ref
-              }' >> release-assets/PULL_REQUESTS.jsonl; then
-              echo "::error title=Pull request evidence failed::Could not fetch associated PRs for commit $commit_sha. Manual recovery: re-run after GitHub API recovers or inspect the commit manually." >&2
-              exit 1
-            fi
-          done < <(jq -r '.commits[].sha' release-assets/COMPARE.json)
-          jq -s 'unique_by(.number) | sort_by(.number)' \
-            release-assets/PULL_REQUESTS.jsonl > release-assets/PULL_REQUESTS.json
 
           jq -Rn '
             [inputs
@@ -761,7 +808,8 @@ jobs:
                 status: $compare[0].status,
                 aheadBy: $compare[0].ahead_by,
                 behindBy: $compare[0].behind_by,
-                totalCommits: $compare[0].total_commits
+                totalCommits: $compare[0].total_commits,
+                snapshot: $compare[0].snapshot
               },
               commits: ($compare[0].commits | map({
                 sha,
@@ -814,6 +862,10 @@ jobs:
             release-assets/RELEASE_NOTES.md
             release-assets/RELEASE_NOTES_SOURCE.json
             release-assets/QUALITY_REPORT.json
+            release-assets/COMPARE_METADATA.json
+            release-assets/TARGET_COMMIT_METADATA.json
+            release-assets/COMPARE.json
+            release-assets/PULL_REQUESTS.json
             release-assets/RELEASE_EVIDENCE.json
             release-assets/MD5SUMS.txt
             release-assets/SHA256SUMS.txt

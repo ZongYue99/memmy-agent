@@ -49,7 +49,9 @@ function drainArray(items: any[]): ({ limit }?: { limit?: number }) => any[] {
   return ({ limit = MAX_INJECTIONS_PER_TURN } = {}) => items.splice(0, limit);
 }
 
-async function waitUntil(predicate: () => boolean, timeout = 1000): Promise<void> {
+// Full-suite workers can spend more than one second initializing runtime tools
+// before the loop begins draining its already-buffered inbound queue.
+async function waitUntil(predicate: () => boolean, timeout = 5000): Promise<void> {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
     if (predicate()) return;
@@ -249,7 +251,7 @@ describe("AgentRunner injection checkpoints", () => {
       captured.push(messages.map((msg: any) => ({ ...msg })));
       return new LLMResponse({ content: calls === 1 ? "first answer" : "second answer" });
     });
-    const loop = new AgentLoop({ bus: new MessageBus(), provider, workspace: root, model: "test-model" });
+    const loop = new AgentLoop({ bus: new MessageBus(), provider, workspace: root, model: "gpt-4.1" });
     loop.tools.getDefinitions = vi.fn(() => []);
     const pending = new AsyncQueue<InboundMessage>();
     pending.put(inbound("", { media: [imagePath] }));
@@ -273,6 +275,7 @@ describe("AgentRunner injection checkpoints", () => {
 
     const result = await new AgentRunner(provider).run(new AgentRunSpec({
       messages: [{ role: "user", content: "hello" }],
+      model: "gpt-4.1",
       provider,
       tools: makeTools(),
       maxIterations: 5,
