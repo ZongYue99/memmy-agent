@@ -11,6 +11,7 @@ import { JsonlAuditOutbox } from "../adapters/audit/jsonl-audit-outbox.js";
 import { BackendRegistry } from "../adapters/execution/backend-registry.js";
 import { LocalSandboxExecutor } from "../adapters/execution/local-sandbox-executor.js";
 import { LocalSandboxedToolExecutor } from "../adapters/execution/local-sandboxed-tool-executor.js";
+import { LinuxBwrapBackend } from "../adapters/execution/linux-bwrap-backend.js";
 import { MacosSeatbeltBackend } from "../adapters/execution/macos-seatbelt-backend.js";
 import { ApprovalBroker } from "../approval/approval-broker.js";
 import { AttemptPlanner } from "../manager/attempt-planner.js";
@@ -62,7 +63,7 @@ export function createLocalSandboxRuntime(
     clock,
   );
   const platformExecutor = new LocalSandboxExecutor(
-    new BackendRegistry([new MacosSeatbeltBackend()]),
+    new BackendRegistry([new MacosSeatbeltBackend(), new LinuxBwrapBackend()]),
   );
   const approvalMode =
     input.approvalPrompt && ["desktop", "cli", "tui"].includes(input.source)
