@@ -5,9 +5,9 @@ import type { DenialObservation } from "../../domain/denial-evidence.js";
 const LOG_EXECUTABLE = "/usr/bin/log";
 const MAX_LINE_CHARS = 16_384;
 const MAX_OBSERVATIONS = 256;
-const READY_TIMEOUT_MS = 300;
+const READY_TIMEOUT_MS = 1_000;
 const DELIVERY_GRACE_MS = 150;
-const DENIAL_DELIVERY_TIMEOUT_MS = 500;
+const DENIAL_DELIVERY_TIMEOUT_MS = 1_500;
 const STOP_TIMEOUT_MS = 500;
 
 type SpawnProcess = (
