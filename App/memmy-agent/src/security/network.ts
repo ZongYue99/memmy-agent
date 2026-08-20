@@ -43,7 +43,7 @@ function inCidr(ip: string, cidr: Cidr): boolean {
   if (!parsed || parsed.version !== cidr.version) return false;
   const total = cidr.version === 4 ? 32 : 128;
   const shift = BigInt(total - cidr.bits);
-  return (parsed.value >> shift) === (cidr.base >> shift);
+  return parsed.value >> shift === cidr.base >> shift;
 }
 
 const blockedNetworks = [
@@ -57,17 +57,19 @@ const blockedNetworks = [
   "::1/128",
   "fc00::/7",
   "fe80::/10",
-].map(parseCidr).filter((x): x is Cidr => Boolean(x));
+]
+  .map(parseCidr)
+  .filter((x): x is Cidr => Boolean(x));
 
 export function configureSsrfWhitelist(cidrs: string[]): void {
   whitelist = cidrs.map(parseCidr).filter((x): x is Cidr => Boolean(x));
 }
 
-function normalizeHost(hostname: string): string {
+export function normalizeNetworkHost(hostname: string): string {
   return hostname.replace(/^\[|\]$/g, "").toLowerCase();
 }
 
-function isPrivateIp(ip: string): boolean {
+export function isPrivateNetworkAddress(ip: string): boolean {
   if (whitelist.some((cidr) => inCidr(ip, cidr))) return false;
   const parsed = parseIp(ip);
   if (!parsed) return true;
@@ -83,11 +85,14 @@ export async function validateResolvedUrl(url: string): Promise<[boolean, string
   }
   if (!parsed.hostname) return [true, ""];
 
-  const host = normalizeHost(parsed.hostname);
+  const host = normalizeNetworkHost(parsed.hostname);
   const literal = parseIp(host);
-  const addrs = literal ? [{ address: host }] : await dns.lookup(host, { all: true }).catch(() => []);
+  const addrs = literal
+    ? [{ address: host }]
+    : await dns.lookup(host, { all: true }).catch(() => []);
   for (const addr of addrs) {
-    if (isPrivateIp(addr.address)) return [false, `Redirect target ${host} resolves to private address ${addr.address}`];
+    if (isPrivateNetworkAddress(addr.address))
+      return [false, `Redirect target ${host} resolves to private address ${addr.address}`];
   }
   return [true, ""];
 }
@@ -99,15 +104,19 @@ export async function validateUrlTarget(url: string): Promise<[boolean, string]>
   } catch {
     return [false, "Invalid URL"];
   }
-  if (!["http:", "https:"].includes(parsed.protocol)) return [false, "Only http/https URLs are allowed"];
+  if (!["http:", "https:"].includes(parsed.protocol))
+    return [false, "Only http/https URLs are allowed"];
   if (!parsed.hostname) return [false, "URL is missing domain"];
 
-  const host = normalizeHost(parsed.hostname);
+  const host = normalizeNetworkHost(parsed.hostname);
   const literal = parseIp(host);
-  const addrs = literal ? [{ address: host }] : await dns.lookup(host, { all: true }).catch(() => []);
+  const addrs = literal
+    ? [{ address: host }]
+    : await dns.lookup(host, { all: true }).catch(() => []);
   if (!addrs.length) return [false, "Could not resolve host"];
   for (const addr of addrs) {
-    if (isPrivateIp(addr.address)) return [false, `Resolved address ${addr.address} is private or blocked`];
+    if (isPrivateNetworkAddress(addr.address))
+      return [false, `Resolved address ${addr.address} is private or blocked`];
   }
   return [true, ""];
 }
@@ -125,9 +134,9 @@ export function containsInternalUrlSync(command: string): boolean {
   const urls = command.match(URL_RE) ?? [];
   for (const url of urls) {
     try {
-      const host = normalizeHost(new URL(url).hostname);
+      const host = normalizeNetworkHost(new URL(url).hostname);
       const literal = parseIp(host);
-      if (literal ? isPrivateIp(host) : host === "localhost") {
+      if (literal ? isPrivateNetworkAddress(host) : host === "localhost") {
         return true;
       }
     } catch {
