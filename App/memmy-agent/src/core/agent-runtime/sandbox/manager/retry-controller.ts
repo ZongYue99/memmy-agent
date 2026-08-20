@@ -27,7 +27,7 @@ export class RetryController {
   evaluate(record: SandboxExecutionRecord, authorization: EffectiveAuthorization): RetryDecision {
     const terminal = record.stateHistory.at(-1)?.state;
     if (terminal?.kind !== "denied") return { kind: "not-eligible", reason: "not-denied" };
-    if (record.attempt.parentAttemptId) {
+    if (record.attempt.parentAttemptId || record.attempt.approvalGrantHash) {
       return { kind: "not-eligible", reason: "already-retried" };
     }
     if (

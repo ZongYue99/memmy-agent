@@ -1,9 +1,12 @@
 import path from "node:path";
+import type { ApprovalGrant } from "../approval/approval-grant.js";
+import { approvalGrantIsValid } from "../approval/approval-grant.js";
 import type { CanonicalPath } from "../domain/capability.js";
 import type { NormalizedToolCall, SandboxAttempt, SandboxType } from "../domain/sandbox-attempt.js";
 import { deepFreeze, immutableSnapshot } from "../domain/immutable.js";
 import type { PermissionProfile } from "../domain/permission-profile.js";
 import type { EffectiveAuthorization } from "../policy/policy-resolver.js";
+import { capabilitySetAllows } from "../policy/policy-cap.js";
 import { stablePolicyHash } from "../policy/policy-hash.js";
 import type { ClockPort } from "../ports/clock-port.js";
 import type { IdGeneratorPort } from "../ports/id-generator-port.js";
@@ -100,6 +103,77 @@ export class AttemptPlanner {
       sandboxCwd,
       workspaceRoots,
       networkContextId: input.networkContextId,
+      createdAt,
+    });
+    return deepFreeze({ attempt, call });
+  }
+
+  planRetry(
+    input: Readonly<{
+      parentAttempt: SandboxAttempt;
+      call: NormalizedToolCall;
+      authorization: EffectiveAuthorization;
+      approvalGrant: ApprovalGrant;
+      sandboxType: SandboxType;
+      networkContextId: string;
+    }>,
+  ): PlannedSandboxAttempt {
+    if (input.parentAttempt.parentAttemptId || input.parentAttempt.approvalGrantHash) {
+      throw new Error("a retry attempt cannot create another retry");
+    }
+    requireStableIdentifier("parentAttemptId", input.parentAttempt.attemptId);
+    requireStableIdentifier("runtimeCallId", input.parentAttempt.runtimeCallId);
+    requireStableIdentifier("toolName", input.call.toolName);
+    requireStableIdentifier("networkContextId", input.networkContextId);
+    assertValidAuthorization(input.authorization);
+    if (!approvalGrantIsValid(input.approvalGrant)) {
+      throw new Error("approval grant hash verification failed");
+    }
+    const call = immutableSnapshot(input.call);
+    const argsHash = stablePolicyHash(call);
+    if (
+      argsHash !== input.parentAttempt.argsHash ||
+      input.approvalGrant.argsHash !== argsHash ||
+      input.approvalGrant.runtimeCallId !== input.parentAttempt.runtimeCallId ||
+      input.approvalGrant.initialPolicyHash !== input.authorization.initialPolicyHash ||
+      input.approvalGrant.parentAttemptId !== input.parentAttempt.attemptId
+    ) {
+      throw new Error("approval grant does not match the retry context");
+    }
+    if (
+      input.approvalGrant.additionalPermission.some(
+        (access) => !capabilitySetAllows(input.authorization.baseGrant, access),
+      )
+    ) {
+      throw new Error("approved permission is missing from the retry authorization");
+    }
+    if (input.sandboxType === "external" || input.sandboxType === "disabled") {
+      throw new Error("managed permission profile requires a managed sandbox type");
+    }
+    const attemptId = this.ids.nextId("attempt");
+    requireStableIdentifier("attemptId", attemptId);
+    if (attemptId === input.parentAttempt.attemptId) {
+      throw new Error("retry attempt id must differ from its parent");
+    }
+    const createdAt = this.clock.now();
+    if (!Number.isSafeInteger(createdAt) || createdAt < 0) {
+      throw new Error("createdAt must be a non-negative Unix millisecond timestamp");
+    }
+    const permissionProfile = immutableSnapshot<PermissionProfile>(
+      input.authorization.permissionProfile,
+    );
+    const attempt = deepFreeze<SandboxAttempt>({
+      attemptId,
+      parentAttemptId: input.parentAttempt.attemptId,
+      runtimeCallId: input.parentAttempt.runtimeCallId,
+      argsHash,
+      permissionProfile,
+      compiledPolicyHash: permissionProfile.policyHash,
+      sandboxType: input.sandboxType,
+      sandboxCwd: input.parentAttempt.sandboxCwd,
+      workspaceRoots: input.parentAttempt.workspaceRoots,
+      networkContextId: input.networkContextId,
+      approvalGrantHash: input.approvalGrant.approvalGrantHash,
       createdAt,
     });
     return deepFreeze({ attempt, call });

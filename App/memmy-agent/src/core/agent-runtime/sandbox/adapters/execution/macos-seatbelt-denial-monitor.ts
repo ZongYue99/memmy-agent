@@ -7,6 +7,7 @@ const MAX_LINE_CHARS = 16_384;
 const MAX_OBSERVATIONS = 256;
 const READY_TIMEOUT_MS = 300;
 const DELIVERY_GRACE_MS = 150;
+const DENIAL_DELIVERY_TIMEOUT_MS = 500;
 const STOP_TIMEOUT_MS = 500;
 
 type SpawnProcess = (
@@ -17,7 +18,9 @@ type SpawnProcess = (
 
 export interface SeatbeltDenialCapture {
   bindProcess(processId: number): void;
-  finish(): Promise<readonly DenialObservation[]>;
+  finish(
+    options?: Readonly<{ waitForObservation?: boolean }>,
+  ): Promise<readonly DenialObservation[]>;
 }
 
 export interface SeatbeltDenialMonitor {
@@ -117,6 +120,10 @@ export class MacosSeatbeltDenialMonitor implements SeatbeltDenialMonitor {
     const closed = new Promise<void>((resolve) => {
       resolveClosed = resolve;
     });
+    let resolveTargetObservation!: () => void;
+    const targetObservation = new Promise<void>((resolve) => {
+      resolveTargetObservation = resolve;
+    });
     const onData = (chunk: Buffer) => {
       if (!sawOutput) {
         sawOutput = true;
@@ -136,6 +143,7 @@ export class MacosSeatbeltDenialMonitor implements SeatbeltDenialMonitor {
           continue;
         }
         if (observations.length < MAX_OBSERVATIONS) observations.push(observation);
+        if (targetProcessId !== null) resolveTargetObservation();
       }
     };
     process.stdout?.on("data", onData);
@@ -164,11 +172,16 @@ export class MacosSeatbeltDenialMonitor implements SeatbeltDenialMonitor {
         if (!Number.isSafeInteger(processId) || processId <= 0 || targetProcessId !== null) return;
         targetProcessId = processId;
         observations = observations.filter((observation) => observation.processId === processId);
+        if (observations.length) resolveTargetObservation();
       },
-      finish() {
+      finish(options) {
         if (finishPromise) return finishPromise;
         finishPromise = (async () => {
-          await delay(DELIVERY_GRACE_MS);
+          if (options?.waitForObservation && !observations.length) {
+            await Promise.race([targetObservation, delay(DENIAL_DELIVERY_TIMEOUT_MS)]);
+          } else {
+            await delay(DELIVERY_GRACE_MS);
+          }
           if (!exited) stopProcess(process, "SIGTERM");
           await Promise.race([closed, delay(STOP_TIMEOUT_MS)]);
           if (!exited) {

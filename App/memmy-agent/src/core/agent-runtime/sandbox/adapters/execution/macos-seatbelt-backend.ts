@@ -283,7 +283,12 @@ export class MacosSeatbeltBackend implements SandboxBackend {
       if (terminateTimer) clearTimeout(terminateTimer);
       clearTimeout(runtimeTimer);
       input.abortSignal?.removeEventListener("abort", onAbort);
-      const observations = (await denialCapture?.finish().catch(() => [])) ?? [];
+      const waitForObservation =
+        outcome.kind === "completed" &&
+        outcome.result.exitCode !== null &&
+        outcome.result.exitCode !== 0;
+      const observations =
+        (await denialCapture?.finish({ waitForObservation }).catch(() => [])) ?? [];
       const finalOutcome =
         outcome.kind === "completed"
           ? (() => {

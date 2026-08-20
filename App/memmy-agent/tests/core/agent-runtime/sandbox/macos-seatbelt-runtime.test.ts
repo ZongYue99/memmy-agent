@@ -129,7 +129,7 @@ runtimeDescribe("macOS Seatbelt runtime", () => {
       child.once("error", reject);
       child.once("close", () => resolve());
     });
-    expect(await capture.finish()).toContainEqual(
+    expect(await capture.finish({ waitForObservation: true })).toContainEqual(
       expect.objectContaining({
         processId: child.pid,
         operation: "file-read-data",

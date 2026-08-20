@@ -1,3 +1,5 @@
+import type { ApprovalGrant } from "../approval/approval-grant.js";
+import type { ApprovalBroker } from "../approval/approval-broker.js";
 import type {
   AttemptState,
   AttemptStateRecord,
@@ -8,6 +10,7 @@ import { transitionAttemptState } from "../domain/sandbox-attempt.js";
 import { immutableSnapshot } from "../domain/immutable.js";
 import type { SandboxExecutionOutcome } from "../domain/sandbox-result.js";
 import type { EffectiveAuthorization } from "../policy/policy-resolver.js";
+import { applyApproval } from "../policy/policy-resolver.js";
 import type { ClockPort } from "../ports/clock-port.js";
 import type {
   SandboxExecutionHandle,
@@ -18,7 +21,10 @@ import {
   assertValidAuthorization,
   AttemptPlanner,
   normalizeWorkspaceContext,
+  type NormalizedWorkspaceContext,
+  type PlannedSandboxAttempt,
 } from "./attempt-planner.js";
+import { RetryController, type RetryIneligibilityReason } from "./retry-controller.js";
 
 export class SandboxManagerError extends Error {
   constructor(readonly code: "executor-target-unavailable") {
@@ -26,6 +32,34 @@ export class SandboxManagerError extends Error {
     this.name = "SandboxManagerError";
   }
 }
+
+export type ApprovalRetryDependencies = Readonly<{
+  broker: ApprovalBroker;
+  controller?: RetryController;
+}>;
+
+export type RetryDisposition =
+  | Readonly<{ kind: "retry-attempted" }>
+  | Readonly<{
+      kind: "not-retried";
+      reason:
+        | RetryIneligibilityReason
+        | "approval-unavailable"
+        | "approval-denied"
+        | "approval-cancelled"
+        | "approval-expired"
+        | "approval-invalid"
+        | "policy-unavailable"
+        | "policy-changed"
+        | "retry-target-unavailable"
+        | "retry-plan-invalid"
+        | "grant-consumption-failed";
+    }>;
+
+export type SandboxExecutionChain = Readonly<{
+  attempts: readonly SandboxExecutionRecord[];
+  retry: RetryDisposition;
+}>;
 
 function normalizedReason(reason: string, fallback: string): string {
   return /^[a-z0-9][a-z0-9._-]{0,127}$/i.test(reason) ? reason : fallback;
@@ -94,11 +128,16 @@ async function waitForCompletion(
 }
 
 export class SandboxManager {
+  private readonly retryController: RetryController;
+
   constructor(
     private readonly planner: AttemptPlanner,
     private readonly executor: SandboxExecutorPort,
     private readonly clock: ClockPort,
-  ) {}
+    private readonly approvalRetry?: ApprovalRetryDependencies,
+  ) {
+    this.retryController = approvalRetry?.controller ?? new RetryController();
+  }
 
   async runInitialAttempt(
     input: Readonly<{
@@ -112,16 +151,7 @@ export class SandboxManager {
   ): Promise<SandboxExecutionRecord> {
     assertValidAuthorization(input.authorization);
     const workspaceContext = normalizeWorkspaceContext(input.sandboxCwd, input.workspaceRoots);
-    let target: SandboxExecutionTarget;
-    try {
-      target = await this.executor.selectTarget({
-        permissionProfile: immutableSnapshot(input.authorization.permissionProfile),
-        sandboxCwd: workspaceContext.sandboxCwd,
-        workspaceRoots: workspaceContext.workspaceRoots,
-      });
-    } catch {
-      throw new SandboxManagerError("executor-target-unavailable");
-    }
+    const target = await this.selectTarget(input.authorization, workspaceContext);
     const planned = this.planner.planInitial({
       runtimeCallId: input.runtimeCallId,
       call: input.call,
@@ -131,10 +161,152 @@ export class SandboxManager {
       workspaceRoots: workspaceContext.workspaceRoots,
       networkContextId: target.networkContextId,
     });
+    return this.execute(planned, input.abortSignal);
+  }
+
+  async runWithApprovalRetry(
+    input: Readonly<{
+      runtimeCallId: string;
+      call: NormalizedToolCall;
+      authorization: EffectiveAuthorization;
+      resolveCurrentAuthorization: () => EffectiveAuthorization | Promise<EffectiveAuthorization>;
+      approvalSubjectId: string;
+      sandboxCwd: string;
+      workspaceRoots: readonly string[];
+      abortSignal?: AbortSignal;
+    }>,
+  ): Promise<SandboxExecutionChain> {
+    const initial = await this.runInitialAttempt(input);
+    const retryDecision = this.retryController.evaluate(initial, input.authorization);
+    if (retryDecision.kind === "not-eligible") {
+      return this.chain([initial], { kind: "not-retried", reason: retryDecision.reason });
+    }
+    const broker = this.approvalRetry?.broker;
+    if (!broker) {
+      return this.chain([initial], { kind: "not-retried", reason: "approval-unavailable" });
+    }
+    let approval;
+    try {
+      approval = await broker.requestApproval({
+        runtimeCallId: initial.attempt.runtimeCallId,
+        argsHash: initial.attempt.argsHash,
+        initialPolicyHash: input.authorization.initialPolicyHash,
+        parentAttemptId: initial.attempt.attemptId,
+        additionalPermission: retryDecision.additionalPermission,
+        subjectId: input.approvalSubjectId,
+        abortSignal: input.abortSignal,
+      });
+    } catch {
+      return this.chain([initial], { kind: "not-retried", reason: "approval-invalid" });
+    }
+    if (approval.kind !== "approved") {
+      const reason =
+        approval.kind === "invalid-response"
+          ? "approval-invalid"
+          : (`approval-${approval.kind}` as const);
+      return this.chain([initial], { kind: "not-retried", reason });
+    }
+    const { grant } = approval;
+    if (input.abortSignal?.aborted) {
+      await this.revokeGrant(grant.grantId);
+      return this.chain([initial], { kind: "not-retried", reason: "approval-cancelled" });
+    }
+    let currentAuthorization: EffectiveAuthorization;
+    try {
+      currentAuthorization = await input.resolveCurrentAuthorization();
+      assertValidAuthorization(currentAuthorization);
+    } catch {
+      await this.revokeGrant(grant.grantId);
+      return this.chain([initial], { kind: "not-retried", reason: "policy-unavailable" });
+    }
+    if (currentAuthorization.initialPolicyHash !== grant.initialPolicyHash) {
+      await this.revokeGrant(grant.grantId);
+      return this.chain([initial], { kind: "not-retried", reason: "policy-changed" });
+    }
+    let retryAuthorization: EffectiveAuthorization;
+    try {
+      retryAuthorization = applyApproval(currentAuthorization, grant);
+    } catch {
+      await this.revokeGrant(grant.grantId);
+      return this.chain([initial], { kind: "not-retried", reason: "policy-changed" });
+    }
+    let target: SandboxExecutionTarget;
+    try {
+      target = await this.selectTarget(retryAuthorization, {
+        sandboxCwd: initial.attempt.sandboxCwd,
+        workspaceRoots: initial.attempt.workspaceRoots,
+      });
+    } catch {
+      await this.revokeGrant(grant.grantId);
+      return this.chain([initial], {
+        kind: "not-retried",
+        reason: "retry-target-unavailable",
+      });
+    }
+    let retry: PlannedSandboxAttempt;
+    try {
+      retry = this.planner.planRetry({
+        parentAttempt: initial.attempt,
+        call: input.call,
+        authorization: retryAuthorization,
+        approvalGrant: grant,
+        sandboxType: target.sandboxType,
+        networkContextId: target.networkContextId,
+      });
+    } catch {
+      await this.revokeGrant(grant.grantId);
+      return this.chain([initial], { kind: "not-retried", reason: "retry-plan-invalid" });
+    }
+    if (input.abortSignal?.aborted) {
+      await this.revokeGrant(grant.grantId);
+      return this.chain([initial], { kind: "not-retried", reason: "approval-cancelled" });
+    }
+    let consumed: ApprovalGrant | null;
+    try {
+      consumed = await broker.consume(grant.grantId, {
+        runtimeCallId: initial.attempt.runtimeCallId,
+        argsHash: initial.attempt.argsHash,
+        initialPolicyHash: grant.initialPolicyHash,
+        parentAttemptId: initial.attempt.attemptId,
+        subjectId: input.approvalSubjectId,
+        approvalGrantHash: grant.approvalGrantHash,
+      });
+    } catch {
+      consumed = null;
+    }
+    if (consumed?.approvalGrantHash !== grant.approvalGrantHash) {
+      return this.chain([initial], {
+        kind: "not-retried",
+        reason: "grant-consumption-failed",
+      });
+    }
+    const retried = await this.execute(retry, input.abortSignal);
+    return this.chain([initial, retried], { kind: "retry-attempted" });
+  }
+
+  private async selectTarget(
+    authorization: EffectiveAuthorization,
+    workspace: NormalizedWorkspaceContext,
+  ): Promise<SandboxExecutionTarget> {
+    try {
+      return await this.executor.selectTarget({
+        permissionProfile: immutableSnapshot(authorization.permissionProfile),
+        sandboxCwd: workspace.sandboxCwd,
+        workspaceRoots: workspace.workspaceRoots,
+      });
+    } catch {
+      throw new SandboxManagerError("executor-target-unavailable");
+    }
+  }
+
+  private async execute(
+    planned: PlannedSandboxAttempt,
+    abortSignal?: AbortSignal,
+  ): Promise<SandboxExecutionRecord> {
     const history: AttemptStateRecord[] = [];
     let state: AttemptState = { kind: "created" };
     history.push(this.record(planned.attempt.attemptId, state));
-    if (input.abortSignal?.aborted) {
+    if (abortSignal?.aborted) {
       state = transitionAttemptState(state, { kind: "cancelled", reason: "caller-aborted" });
       history.push(this.record(planned.attempt.attemptId, state));
       return Object.freeze({ attempt: planned.attempt, stateHistory: Object.freeze(history) });
@@ -144,7 +316,7 @@ export class SandboxManager {
       handle = await this.executor.start({
         attempt: planned.attempt,
         call: planned.call,
-        abortSignal: input.abortSignal,
+        abortSignal,
       });
       if (!handle.processHandle || handle.processHandle !== handle.processHandle.trim()) {
         throw new Error("invalid process handle");
@@ -164,10 +336,25 @@ export class SandboxManager {
     history.push(this.record(planned.attempt.attemptId, state));
     state = transitionAttemptState(
       state,
-      terminalState(await waitForCompletion(handle, input.abortSignal)),
+      terminalState(await waitForCompletion(handle, abortSignal)),
     );
     history.push(this.record(planned.attempt.attemptId, state));
     return Object.freeze({ attempt: planned.attempt, stateHistory: Object.freeze(history) });
+  }
+
+  private async revokeGrant(grantId: string): Promise<void> {
+    try {
+      await this.approvalRetry?.broker.revoke(grantId);
+    } catch {
+      // This manager still refuses the retry; the call-bound grant expires independently.
+    }
+  }
+
+  private chain(
+    attempts: readonly SandboxExecutionRecord[],
+    retry: RetryDisposition,
+  ): SandboxExecutionChain {
+    return Object.freeze({ attempts: Object.freeze([...attempts]), retry: Object.freeze(retry) });
   }
 
   private record(attemptId: string, state: AttemptState): AttemptStateRecord {

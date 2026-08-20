@@ -53,13 +53,18 @@ function grant(path: string) {
 
 function deniedRecord(
   path: string,
-  options: Readonly<{ parentAttemptId?: string; minimallySupplementable?: boolean }> = {},
+  options: Readonly<{
+    parentAttemptId?: string;
+    approvalGrantHash?: string;
+    minimallySupplementable?: boolean;
+  }> = {},
 ): SandboxExecutionRecord {
   const resolved = authorization();
   return {
     attempt: {
       attemptId: "attempt-1",
       ...(options.parentAttemptId ? { parentAttemptId: options.parentAttemptId } : {}),
+      ...(options.approvalGrantHash ? { approvalGrantHash: options.approvalGrantHash } : {}),
       runtimeCallId: "call-1",
       argsHash: "args-hash",
       permissionProfile: resolved.permissionProfile,
@@ -126,6 +131,12 @@ describe("approval policy", () => {
     expect(
       controller.evaluate(
         deniedRecord("/workspace/shared.txt", { parentAttemptId: "attempt-0" }),
+        authorization(),
+      ),
+    ).toEqual({ kind: "not-eligible", reason: "already-retried" });
+    expect(
+      controller.evaluate(
+        deniedRecord("/workspace/shared.txt", { approvalGrantHash: "grant-hash" }),
         authorization(),
       ),
     ).toEqual({ kind: "not-eligible", reason: "already-retried" });
