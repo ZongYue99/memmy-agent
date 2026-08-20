@@ -18,6 +18,7 @@ export type SandboxBackendSupport =
       reason:
         | "platform-mismatch"
         | "backend-unavailable"
+        | "backend-attestation-invalid"
         | "filesystem-mode-unsupported"
         | "network-mode-unsupported"
         | "process-mode-unsupported"
