@@ -21,7 +21,8 @@ describe("Ink TUI Turn admission", () => {
     expect(source).not.toContain("if (busy) return;");
     expect(source).toContain("Enter: queue next turn · Tab: add to current turn");
     expect(source).toContain("Session is running from another channel · Enter: queue next turn");
-    expect(source).toMatch(/<ComposerInput\s+active\s/);
+    expect(source).toContain("active={!gatewayState.sandboxApproval}");
+    expect(source).not.toContain("active={!gatewayState.busy}");
   });
 
   it("uses Gateway state and never creates or stops a local AgentLoop", () => {
