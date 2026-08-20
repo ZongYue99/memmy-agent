@@ -104,6 +104,70 @@ describe("AgentRunner tool execution", () => {
     expect(result.result).toBe("Error: sandbox_denied: guard_unavailable: policy store offline");
   });
 
+  it("routes a supported allowed call through the sandbox executor", async () => {
+    const executeDirectly = vi.fn(async () => "unsafe direct execution");
+    const executeSandboxed = vi.fn(async () => "sandboxed output");
+    const authorization = { compiledPolicyHash: "policy-hash" } as any;
+    const tools = {
+      prepareCall: (_name: string, params: Record<string, any>) => [
+        { execute: executeDirectly },
+        params,
+        null,
+      ],
+      get: () => ({ readOnly: false }),
+    } as any;
+    const [result] = await new AgentRunner().executeTools(
+      new AgentRunSpec({
+        tools,
+        workspace: "/workspace",
+        toolCallGuard: { authorize: async () => ({ type: "allow", authorization }) },
+        sandboxedToolExecutor: {
+          handles: (toolName: string) => toolName === "exec",
+          execute: executeSandboxed,
+        },
+      }),
+      [new ToolCallRequest({ id: "exec-1", name: "exec", arguments: { command: "pwd" } })],
+    );
+
+    expect(executeDirectly).not.toHaveBeenCalled();
+    expect(executeSandboxed).toHaveBeenCalledWith({
+      runtimeCallId: "exec-1",
+      toolName: "exec",
+      arguments: { command: "pwd" },
+      authorization,
+      workspaceRoot: "/workspace",
+    });
+    expect(result.result).toBe("sandboxed output");
+  });
+
+  it("fails closed when a sandboxed tool has no bound authorization", async () => {
+    const executeDirectly = vi.fn(async () => "unsafe direct execution");
+    const executeSandboxed = vi.fn(async () => "sandboxed output");
+    const tools = {
+      prepareCall: (_name: string, params: Record<string, any>) => [
+        { execute: executeDirectly },
+        params,
+        null,
+      ],
+      get: () => ({ readOnly: false }),
+    } as any;
+    const [result] = await new AgentRunner().executeTools(
+      new AgentRunSpec({
+        tools,
+        workspace: "/workspace",
+        toolCallGuard: { authorize: async () => ({ type: "allow" }) },
+        sandboxedToolExecutor: { handles: () => true, execute: executeSandboxed },
+      }),
+      [new ToolCallRequest({ id: "exec-1", name: "exec", arguments: { command: "pwd" } })],
+    );
+
+    expect(executeDirectly).not.toHaveBeenCalled();
+    expect(executeSandboxed).not.toHaveBeenCalled();
+    expect(result.result).toBe(
+      "Error: sandbox_authorization_unavailable\n\n[Analyze the error above and try a different approach.]",
+    );
+  });
+
   it("keeps file lint failures as successful tool content", async () => {
     const runner = new AgentRunner();
     const content = "Successfully wrote /workspace/broken.json\n\nLint results:\n- /workspace/broken.json: failed\n  syntax error";

@@ -6,7 +6,7 @@ import { normalizeCapabilitySet } from "./policy-cap.js";
 
 const DEFAULT_PROCESS_LIMITS = {
   spawn: "non-interactive" as const,
-  maxProcesses: 32,
+  maxProcesses: 1,
   maxRuntimeMs: 30 * 60 * 1_000,
   maxOutputBytes: 10 * 1_024 * 1_024,
 };

@@ -1,3 +1,5 @@
+import type { EffectiveAuthorization } from "../policy/policy-resolver.js";
+
 export type ToolCallGuardRequest = Readonly<{
   callId: string | null;
   toolName: string;
@@ -5,7 +7,7 @@ export type ToolCallGuardRequest = Readonly<{
 }>;
 
 export type ToolCallGuardDecision =
-  | Readonly<{ type: "allow" }>
+  | Readonly<{ type: "allow"; authorization?: EffectiveAuthorization }>
   | Readonly<{ type: "ask"; reason: string }>
   | Readonly<{ type: "deny"; reason: string }>;
 

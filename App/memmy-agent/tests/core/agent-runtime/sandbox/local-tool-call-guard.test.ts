@@ -20,7 +20,7 @@ describe("local tool-call guard composition", () => {
         toolName: "read_file",
         arguments: { path: "README.md" },
       }),
-    ).resolves.toEqual({ type: "allow" });
+    ).resolves.toMatchObject({ type: "allow", authorization: { approvalMode: "never" } });
     await expect(
       guard.authorize({
         callId: "read-2",
@@ -33,6 +33,13 @@ describe("local tool-call guard composition", () => {
         callId: "exec-1",
         toolName: "exec",
         arguments: { command: "pwd" },
+      }),
+    ).resolves.toMatchObject({ type: "allow", authorization: { approvalMode: "never" } });
+    await expect(
+      guard.authorize({
+        callId: "exec-session-1",
+        toolName: "exec",
+        arguments: { command: "pwd", yield_time_ms: 1_000 },
       }),
     ).resolves.toEqual({ type: "deny", reason: "unknown-capability" });
   });

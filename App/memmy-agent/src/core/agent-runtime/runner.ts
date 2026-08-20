@@ -5,7 +5,11 @@ import { LLMProvider, LLMResponse, ToolCallRequest } from "../../providers/base.
 import type { ActualModelContext } from "@memmy/local-api-contracts";
 import { CONTEXT_SAFETY_BUFFER_TOKENS } from "../../token-budget.js";
 import { ToolRegistry } from "./tools/registry.js";
-import type { ToolCallGuardDecision, ToolCallGuardPort } from "./sandbox/ports/tool-call-guard-port.js";
+import type { SandboxedToolExecutorPort } from "./sandbox/ports/sandboxed-tool-executor-port.js";
+import type {
+  ToolCallGuardDecision,
+  ToolCallGuardPort,
+} from "./sandbox/ports/tool-call-guard-port.js";
 import type { FileMutationOutcome, ToolExecutionContext } from "./tools/base.js";
 import { AgentHook, AgentHookContext } from "./hook.js";
 import {
@@ -145,6 +149,7 @@ export class AgentRunSpec {
   actualModelContext?: ActualModelContext | null;
   onMaxFinalizationStarting?: (() => void) | null;
   toolCallGuard?: ToolCallGuardPort | null;
+  sandboxedToolExecutor?: SandboxedToolExecutorPort | null;
 
   constructor(init: {
     messages?: Record<string, any>[];
@@ -182,6 +187,7 @@ export class AgentRunSpec {
     actualModelContext?: ActualModelContext | null;
     onMaxFinalizationStarting?: (() => void) | null;
     toolCallGuard?: ToolCallGuardPort | null;
+    sandboxedToolExecutor?: SandboxedToolExecutorPort | null;
   } = {}) {
     this.messages = this.initialMessages = init.messages ?? init.initialMessages ?? [];
     this.provider = init.provider;
@@ -217,6 +223,7 @@ export class AgentRunSpec {
     this.actualModelContext = init.actualModelContext ?? null;
     this.onMaxFinalizationStarting = init.onMaxFinalizationStarting ?? null;
     this.toolCallGuard = init.toolCallGuard ?? null;
+    this.sandboxedToolExecutor = init.sandboxedToolExecutor ?? null;
   }
 }
 
@@ -908,6 +915,7 @@ export class AgentRunner {
       return { call, result: prepError + hint, event, error: spec.failOnToolError ? new Error(prepError) : null };
     }
 
+    let sandboxAuthorization: Extract<ToolCallGuardDecision, { type: "allow" }>["authorization"];
     if (spec.toolCallGuard) {
       let decision: ToolCallGuardDecision;
       try {
@@ -929,6 +937,7 @@ export class AgentRunner {
           error: spec.failOnToolError ? new Error(message) : null,
         };
       }
+      sandboxAuthorization = decision.authorization;
     }
 
     const progressCallback = spec.progressCallback && onProgressAcceptsFileEditEvents(spec.progressCallback)
@@ -973,9 +982,21 @@ export class AgentRunner {
           });
         },
       };
-      const run = tool && typeof tool.execute === "function"
-        ? tool.execute(params, toolContext)
-        : spec.tools.execute(call.name, params, toolContext);
+      const run = spec.sandboxedToolExecutor?.handles(call.name)
+        ? sandboxAuthorization && spec.workspace
+          ? spec.sandboxedToolExecutor.execute({
+              runtimeCallId: call.id ?? null,
+              toolName: call.name,
+              arguments:
+                params && typeof params === "object" && !Array.isArray(params) ? params : {},
+              authorization: sandboxAuthorization,
+              workspaceRoot: spec.workspace,
+              ...(spec.abortSignal ? { abortSignal: spec.abortSignal } : {}),
+            })
+          : Promise.resolve("Error: sandbox_authorization_unavailable")
+        : tool && typeof tool.execute === "function"
+          ? tool.execute(params, toolContext)
+          : spec.tools.execute(call.name, params, toolContext);
       raw = await withAbort(Promise.resolve(run), spec.abortSignal);
       if (spec.abortSignal?.aborted) throw createAbortError();
       let event: Record<string, any>;

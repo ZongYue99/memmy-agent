@@ -68,6 +68,7 @@ function manager(sandboxExecutor: SandboxExecutorPort) {
     new AttemptPlanner({ nextId: () => "attempt-1" }, clock),
     sandboxExecutor,
     clock,
+    { audit: { record: async () => {} } },
   );
 }
 

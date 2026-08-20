@@ -87,7 +87,7 @@ import { LLMRuntime } from "../../utils/llm-runtime.js";
 import { withProgressCapabilities } from "../../utils/progress-events.js";
 import { EMPTY_FINAL_RESPONSE_MESSAGE } from "../../utils/runtime.js";
 import { AgentRunner, AgentRunSpec, type AgentInternalTurnContext } from "./runner.js";
-import { createLocalToolCallGuard, runtimeEntrypointSource } from "./sandbox/index.js";
+import { createLocalSandboxRuntime, runtimeEntrypointSource } from "./sandbox/index.js";
 import {
   GoalRuntime,
   GoalRuntimeError,
@@ -3322,6 +3322,16 @@ export class AgentLoop {
       },
     });
     const hook = this.extraHooks.length ? new CompositeAgentHook([loopHook, ...this.extraHooks]) : loopHook;
+    const sandboxRuntime =
+      this.config.tools.sandboxPolicy.mode === "enforce"
+        ? createLocalSandboxRuntime({
+            workspaceRoot: sessionWorkspace,
+            interactiveProfile: this.config.tools.sandboxPolicy.interactiveProfile,
+            backgroundProfile: this.config.tools.sandboxPolicy.backgroundProfile,
+            source: runtimeEntrypointSource(channel, internalTurnContext),
+            projectId: sessionWorkspace,
+          })
+        : null;
     const result = await this.runner.run(
       new AgentRunSpec({
         messages: initialMessages,
@@ -3356,15 +3366,8 @@ export class AgentLoop {
         internalTurnContext,
         actualModelContext: modelSelection ? persistedModelSelection(modelSelection) : null,
         onMaxFinalizationStarting,
-        toolCallGuard: this.config.tools.sandboxPolicy.mode === "enforce"
-          ? createLocalToolCallGuard({
-              workspaceRoot: sessionWorkspace,
-              interactiveProfile: this.config.tools.sandboxPolicy.interactiveProfile,
-              backgroundProfile: this.config.tools.sandboxPolicy.backgroundProfile,
-              source: runtimeEntrypointSource(channel, internalTurnContext),
-              projectId: sessionWorkspace,
-            })
-          : null,
+        toolCallGuard: sandboxRuntime?.guard,
+        sandboxedToolExecutor: sandboxRuntime?.executor,
       }),
     );
     const rawUsage = result.usage ?? result.response?.usage;

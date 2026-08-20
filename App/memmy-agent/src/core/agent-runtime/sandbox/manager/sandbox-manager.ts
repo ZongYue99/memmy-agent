@@ -36,8 +36,12 @@ export class SandboxManagerError extends Error {
 
 export type ApprovalRetryDependencies = Readonly<{
   broker: ApprovalBroker;
-  audit: AuditPort;
   controller?: RetryController;
+}>;
+
+export type SandboxManagerDependencies = Readonly<{
+  audit: AuditPort;
+  approvalRetry?: ApprovalRetryDependencies;
 }>;
 
 export type RetryDisposition =
@@ -137,9 +141,9 @@ export class SandboxManager {
     private readonly planner: AttemptPlanner,
     private readonly executor: SandboxExecutorPort,
     private readonly clock: ClockPort,
-    private readonly approvalRetry?: ApprovalRetryDependencies,
+    private readonly dependencies: SandboxManagerDependencies,
   ) {
-    this.retryController = approvalRetry?.controller ?? new RetryController();
+    this.retryController = dependencies.approvalRetry?.controller ?? new RetryController();
   }
 
   async runInitialAttempt(
@@ -186,7 +190,7 @@ export class SandboxManager {
     if (retryDecision.kind === "not-eligible") {
       return this.chain([initial], { kind: "not-retried", reason: retryDecision.reason });
     }
-    const broker = this.approvalRetry?.broker;
+    const broker = this.dependencies.approvalRetry?.broker;
     if (!broker) {
       return this.chain([initial], { kind: "not-retried", reason: "approval-unavailable" });
     }
@@ -380,17 +384,15 @@ export class SandboxManager {
 
   private async revokeGrant(grantId: string): Promise<void> {
     try {
-      await this.approvalRetry?.broker.revoke(grantId);
+      await this.dependencies.approvalRetry?.broker.revoke(grantId);
     } catch {
       // This manager still refuses the retry; the call-bound grant expires independently.
     }
   }
 
   private async recordRequiredAudit(draft: Parameters<AuditPort["record"]>[0]): Promise<boolean> {
-    const audit = this.approvalRetry?.audit;
-    if (!audit) return false;
     try {
-      await audit.record(draft);
+      await this.dependencies.audit.record(draft);
       return true;
     } catch {
       return false;
@@ -422,7 +424,7 @@ export class SandboxManager {
           ? { ...common, evidenceRef: terminal.state.evidence.evidenceRef }
           : { ...common, reasonCode: terminal.state.reason };
     try {
-      await this.approvalRetry?.audit.record({
+      await this.dependencies.audit.record({
         runtimeCallId: record.attempt.runtimeCallId,
         detail,
       });

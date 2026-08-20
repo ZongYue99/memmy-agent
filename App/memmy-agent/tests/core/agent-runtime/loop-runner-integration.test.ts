@@ -434,8 +434,10 @@ describe("AgentLoop direct processing", () => {
         }),
       });
       let guard: any = undefined;
+      let executor: any = undefined;
       agent.runner.run = vi.fn(async (spec: any) => {
         guard = spec.toolCallGuard;
+        executor = spec.sandboxedToolExecutor;
         return new AgentRunResult({
           finalContent: "done",
           messages: [...spec.messages, { role: "assistant", content: "done" }],
@@ -444,17 +446,20 @@ describe("AgentLoop direct processing", () => {
       });
 
       await agent.processDirect("continue", { sessionKey: `cli:${mode}` });
-      return guard;
+      return { executor, guard };
     };
 
-    expect(await captureGuard("disabled")).toBeNull();
-    const enforcingGuard = await captureGuard("enforce");
+    expect(await captureGuard("disabled")).toEqual({ executor: null, guard: null });
+    const { executor, guard: enforcingGuard } = await captureGuard("enforce");
     expect(enforcingGuard).toBeDefined();
-    await expect(enforcingGuard.authorize({
-      callId: "read-1",
-      toolName: "read_file",
-      arguments: { path: "README.md" },
-    })).resolves.toEqual({ type: "allow" });
+    expect(executor.handles("exec")).toBe(true);
+    await expect(
+      enforcingGuard.authorize({
+        callId: "read-1",
+        toolName: "read_file",
+        arguments: { path: "README.md" },
+      }),
+    ).resolves.toMatchObject({ type: "allow", authorization: { approvalMode: "never" } });
   });
 
   it("extracts document media before building prompt and keeps image media for multimodal content", async () => {

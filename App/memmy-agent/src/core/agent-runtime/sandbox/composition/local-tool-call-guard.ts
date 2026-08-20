@@ -6,6 +6,7 @@ import { resolvePolicy } from "../policy/policy-resolver.js";
 import { createWorkspacePreset } from "../policy/presets.js";
 import { CapabilityRegistry } from "../guard/capability-registry.js";
 import { registerCoreFileCapabilities } from "../guard/core-file-capabilities.js";
+import { registerExecCapabilities } from "../guard/exec-capabilities.js";
 import { PolicyToolCallGuard } from "../guard/policy-tool-call-guard.js";
 
 export function runtimeEntrypointSource(
@@ -34,15 +35,15 @@ export function createLocalToolCallGuard(
     projectId: input.projectId,
     executorId: input.executorId ?? "local",
   });
-  const workspaceProfile = entrypoint.context.class === "interactive"
-    ? input.interactiveProfile
-    : input.backgroundProfile;
+  const workspaceProfile =
+    entrypoint.context.class === "interactive" ? input.interactiveProfile : input.backgroundProfile;
   const preset = createWorkspacePreset({
     workspaceRoot,
     profile: workspaceProfile,
   });
   const capabilities = new CapabilityRegistry();
   registerCoreFileCapabilities(capabilities);
+  registerExecCapabilities(capabilities);
   return new PolicyToolCallGuard(
     capabilities,
     { cwd: workspaceRoot, workspaceRoots: [workspaceRoot] },

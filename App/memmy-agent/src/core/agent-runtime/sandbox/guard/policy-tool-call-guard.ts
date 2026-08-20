@@ -28,7 +28,7 @@ export class PolicyToolCallGuard implements ToolCallGuardPort {
     const decision = decideToolAccess(await this.resolveAuthorization(requestedCapabilities));
     switch (decision.kind) {
       case "execute":
-        return { type: "allow" };
+        return { type: "allow", authorization: decision.authorization };
       case "requires-approval":
         return { type: "ask", reason: decision.reason };
       case "deny":

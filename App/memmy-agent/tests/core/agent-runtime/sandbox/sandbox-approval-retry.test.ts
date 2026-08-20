@@ -131,7 +131,7 @@ function harness(
   return {
     manager: new SandboxManager(new AttemptPlanner(ids, clock), sandboxExecutor, clock, {
       audit,
-      broker,
+      approvalRetry: { broker },
     }),
     audit,
     channel,
