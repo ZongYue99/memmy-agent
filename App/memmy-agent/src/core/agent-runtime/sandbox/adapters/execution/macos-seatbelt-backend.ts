@@ -6,12 +6,15 @@ import type { NormalizedToolCall, SandboxAttempt } from "../../domain/sandbox-at
 import type { PermissionProfile } from "../../domain/permission-profile.js";
 import type { SandboxExecutionOutcome } from "../../domain/sandbox-result.js";
 import { DenialClassifier } from "../../guard/denial-classifier.js";
-import { stablePolicyHash } from "../../policy/policy-hash.js";
 import type { SandboxExecutionHandle } from "../../ports/sandbox-executor-port.js";
-import type {
-  SandboxBackend,
-  SandboxBackendSelectionInput,
-  SandboxBackendSupport,
+import {
+  attemptMatchesCall,
+  commandFromExecCall,
+  createBoundedOutputCapture,
+  profileSupportsRestrictedExec,
+  type SandboxBackend,
+  type SandboxBackendSelectionInput,
+  type SandboxBackendSupport,
 } from "./sandbox-backend.js";
 import {
   compileMacosSeatbeltPolicy,
@@ -40,52 +43,11 @@ type MacosSeatbeltBackendOptions = Readonly<{
   denialClassifier?: DenialClassifier;
 }>;
 
-type OutputCapture = Readonly<{
-  append(stream: "stdout" | "stderr", chunk: Buffer): void;
-  result(): Readonly<{ stdout: string; stderr: string; truncated: boolean }>;
-}>;
-
 export class MacosSeatbeltBackendError extends Error {
   constructor(readonly code: "unsupported-profile" | "unsupported-call" | "spawn-failed") {
     super(code);
     this.name = "MacosSeatbeltBackendError";
   }
-}
-
-function createOutputCapture(maxBytes: number): OutputCapture {
-  const stdout: Buffer[] = [];
-  const stderr: Buffer[] = [];
-  let capturedBytes = 0;
-  let truncated = false;
-  return {
-    append(stream, chunk) {
-      const remaining = maxBytes - capturedBytes;
-      if (remaining <= 0) {
-        truncated = true;
-        return;
-      }
-      const captured = chunk.byteLength > remaining ? chunk.subarray(0, remaining) : chunk;
-      (stream === "stdout" ? stdout : stderr).push(captured);
-      capturedBytes += captured.byteLength;
-      if (captured.byteLength !== chunk.byteLength) truncated = true;
-    },
-    result() {
-      return {
-        stdout: Buffer.concat(stdout).toString("utf8"),
-        stderr: Buffer.concat(stderr).toString("utf8"),
-        truncated,
-      };
-    },
-  };
-}
-
-function commandFromCall(call: NormalizedToolCall): string {
-  if (call.toolName !== "exec") throw new MacosSeatbeltBackendError("unsupported-call");
-  const command = call.arguments.command;
-  if (typeof command !== "string" || !command.trim() || command.includes("\0")) {
-    throw new MacosSeatbeltBackendError("unsupported-call");
-  }
-  return command;
 }
 
 function buildEnvironment(profile: PermissionProfile): NodeJS.ProcessEnv {
@@ -143,28 +105,6 @@ function canonicalSandboxCwd(
   } catch {
     throw new MacosSeatbeltBackendError("unsupported-profile");
   }
-}
-
-function attemptIsBound(attempt: SandboxAttempt, call: NormalizedToolCall): boolean {
-  try {
-    const { policyHash, ...unhashed } = attempt.permissionProfile;
-    return (
-      attempt.compiledPolicyHash === policyHash &&
-      stablePolicyHash(unhashed) === policyHash &&
-      stablePolicyHash(call) === attempt.argsHash
-    );
-  } catch {
-    return false;
-  }
-}
-
-function profileIsSupported(profile: PermissionProfile): boolean {
-  return (
-    profile.filesystem.kind === "restricted" &&
-    profile.network.mode === "denied" &&
-    profile.process.spawn === "non-interactive" &&
-    (profile.process.maxProcesses === 1 || profile.process.maxProcesses === Number.MAX_SAFE_INTEGER)
-  );
 }
 
 export class MacosSeatbeltBackend implements SandboxBackend {
@@ -227,27 +167,31 @@ export class MacosSeatbeltBackend implements SandboxBackend {
       abortSignal?: AbortSignal;
     }>,
   ): Promise<SandboxExecutionHandle> {
+    const profile = input.attempt.permissionProfile;
     if (
       this.platform !== "darwin" ||
       input.attempt.sandboxType !== this.sandboxType ||
-      !profileIsSupported(input.attempt.permissionProfile) ||
-      !attemptIsBound(input.attempt, input.call)
+      !profileSupportsRestrictedExec(profile) ||
+      (profile.process.maxProcesses !== 1 &&
+        profile.process.maxProcesses !== Number.MAX_SAFE_INTEGER) ||
+      !attemptMatchesCall(input.attempt, input.call)
     ) {
       throw new MacosSeatbeltBackendError("unsupported-profile");
     }
-    const command = commandFromCall(input.call);
-    const compiled = compileMacosSeatbeltPolicy(input.attempt.permissionProfile);
+    const command = commandFromExecCall(input.call);
+    if (!command) throw new MacosSeatbeltBackendError("unsupported-call");
+    const compiled = compileMacosSeatbeltPolicy(profile);
     const sandboxCwd = canonicalSandboxCwd(
       input.attempt.sandboxCwd,
       input.attempt.workspaceRoots,
       compiled,
     );
-    const environment = buildEnvironment(input.attempt.permissionProfile);
+    const environment = buildEnvironment(profile);
     const denialCapture = await this.denialMonitor
-      .start(input.attempt.permissionProfile.process.maxRuntimeMs)
+      .start(profile.process.maxRuntimeMs)
       .catch(() => null);
     const startedAt = this.now();
-    const output = createOutputCapture(input.attempt.permissionProfile.process.maxOutputBytes);
+    const output = createBoundedOutputCapture(profile.process.maxOutputBytes);
     const args = ["-p", compiled.policy, ...compiled.parameters, "--", "/bin/sh", "-c", command];
     let child: ChildProcess;
     try {
@@ -346,7 +290,7 @@ export class MacosSeatbeltBackend implements SandboxBackend {
     input.abortSignal?.addEventListener("abort", onAbort, { once: true });
     const runtimeTimer = setTimeout(
       () => void cancel("max-runtime-exceeded"),
-      input.attempt.permissionProfile.process.maxRuntimeMs,
+      profile.process.maxRuntimeMs,
     );
     runtimeTimer.unref?.();
 

@@ -1,7 +1,7 @@
-import type { SandboxType } from "../../domain/sandbox-attempt.js";
 import type {
   SandboxExecutionHandle,
   SandboxExecutionTarget,
+  SandboxExecutorPort,
 } from "../../ports/sandbox-executor-port.js";
 import type {
   LocalSandboxType,
@@ -11,18 +11,14 @@ import type {
 
 export class BackendRegistryError extends Error {
   constructor(
-    readonly code:
-      | "duplicate-backend"
-      | "no-compatible-backend"
-      | "backend-not-registered"
-      | "backend-type-mismatch",
+    readonly code: "duplicate-backend" | "no-compatible-backend" | "backend-not-registered",
   ) {
     super(code);
     this.name = "BackendRegistryError";
   }
 }
 
-export class BackendRegistry {
+export class BackendRegistry implements SandboxExecutorPort {
   private readonly backends: ReadonlyMap<LocalSandboxType, SandboxBackend>;
 
   constructor(backends: readonly SandboxBackend[]) {
@@ -44,18 +40,13 @@ export class BackendRegistry {
     throw new BackendRegistryError("no-compatible-backend");
   }
 
-  start(
-    sandboxType: SandboxType,
-    input: Parameters<SandboxBackend["start"]>[0],
-  ): Promise<SandboxExecutionHandle> {
+  start(input: Parameters<SandboxExecutorPort["start"]>[0]): Promise<SandboxExecutionHandle> {
+    const sandboxType = input.attempt.sandboxType;
     if (sandboxType === "external" || sandboxType === "disabled") {
       throw new BackendRegistryError("backend-not-registered");
     }
     const backend = this.backends.get(sandboxType);
     if (!backend) throw new BackendRegistryError("backend-not-registered");
-    if (input.attempt.sandboxType !== backend.sandboxType) {
-      throw new BackendRegistryError("backend-type-mismatch");
-    }
     return backend.start(input);
   }
 }

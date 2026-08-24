@@ -147,7 +147,7 @@ describe("Linux Bubblewrap backend", () => {
     const child = fakeChild();
     const spawnProcess = vi.fn<
       (command: string, args: readonly string[], options: SpawnOptions) => ChildProcess
-    >((_command, _args, _options) => {
+    >(() => {
       queueMicrotask(() => child.emit("spawn"));
       return child;
     });
@@ -175,5 +175,13 @@ describe("Linux Bubblewrap backend", () => {
     expect(spawnProcess.mock.calls[0]?.[1]).toEqual(
       expect.arrayContaining(["--unshare-net", "--", "/bin/sh", "-c", "printf hello"]),
     );
+
+    await expect(
+      backend.start({
+        attempt: { ...attempt(workspace, profile, call), argsHash: "tampered" },
+        call,
+      }),
+    ).rejects.toMatchObject({ code: "unsupported-profile" });
+    expect(spawnProcess).toHaveBeenCalledOnce();
   });
 });

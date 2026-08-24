@@ -8,7 +8,6 @@ import {
   BackendRegistry,
   BackendRegistryError,
 } from "../../../../src/core/agent-runtime/sandbox/adapters/execution/backend-registry.js";
-import { LocalSandboxExecutor } from "../../../../src/core/agent-runtime/sandbox/adapters/execution/local-sandbox-executor.js";
 import { MacosSeatbeltBackend } from "../../../../src/core/agent-runtime/sandbox/adapters/execution/macos-seatbelt-backend.js";
 import { MacosSeatbeltDenialMonitor } from "../../../../src/core/agent-runtime/sandbox/adapters/execution/macos-seatbelt-denial-monitor.js";
 import type {
@@ -86,7 +85,7 @@ function attempt(
 }
 
 async function run(command: string, workspace: string, profile: PermissionProfile) {
-  const executor = new LocalSandboxExecutor(new BackendRegistry([new MacosSeatbeltBackend()]));
+  const executor = new BackendRegistry([new MacosSeatbeltBackend()]);
   executor.selectTarget({
     permissionProfile: profile,
     sandboxCwd: workspace,
@@ -140,7 +139,7 @@ runtimeDescribe("macOS Seatbelt runtime", () => {
 
   it("fails closed when the backend cannot enforce a finite process quota", () => {
     const { workspace, profile } = fixture(32);
-    const executor = new LocalSandboxExecutor(new BackendRegistry([new MacosSeatbeltBackend()]));
+    const executor = new BackendRegistry([new MacosSeatbeltBackend()]);
     expect(() =>
       executor.selectTarget({
         permissionProfile: profile,

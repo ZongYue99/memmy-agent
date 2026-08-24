@@ -4,6 +4,7 @@ import type {
   SandboxType,
 } from "../../domain/sandbox-attempt.js";
 import type { PermissionProfile } from "../../domain/permission-profile.js";
+import { stablePolicyHash } from "../../policy/policy-hash.js";
 import type {
   SandboxExecutionHandle,
   SandboxExecutionTarget,
@@ -31,6 +32,64 @@ export type SandboxBackendSelectionInput = Readonly<{
   sandboxCwd: string;
   workspaceRoots: readonly string[];
 }>;
+
+export function commandFromExecCall(call: NormalizedToolCall): string | null {
+  const command = call.arguments.command;
+  return call.toolName === "exec" &&
+    typeof command === "string" &&
+    command.trim() &&
+    !command.includes("\0")
+    ? command
+    : null;
+}
+
+export function attemptMatchesCall(attempt: SandboxAttempt, call: NormalizedToolCall): boolean {
+  try {
+    const { policyHash, ...unhashed } = attempt.permissionProfile;
+    return (
+      attempt.compiledPolicyHash === policyHash &&
+      stablePolicyHash(unhashed) === policyHash &&
+      stablePolicyHash(call) === attempt.argsHash
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function profileSupportsRestrictedExec(profile: PermissionProfile): boolean {
+  return (
+    profile.filesystem.kind === "restricted" &&
+    profile.network.mode === "denied" &&
+    profile.process.spawn === "non-interactive"
+  );
+}
+
+export function createBoundedOutputCapture(maxBytes: number) {
+  const stdout: Buffer[] = [];
+  const stderr: Buffer[] = [];
+  let capturedBytes = 0;
+  let truncated = false;
+  return {
+    append(stream: "stdout" | "stderr", chunk: Buffer): void {
+      const remaining = maxBytes - capturedBytes;
+      if (remaining <= 0) {
+        truncated = true;
+        return;
+      }
+      const captured = chunk.byteLength > remaining ? chunk.subarray(0, remaining) : chunk;
+      (stream === "stdout" ? stdout : stderr).push(captured);
+      capturedBytes += captured.byteLength;
+      if (captured.byteLength !== chunk.byteLength) truncated = true;
+    },
+    result() {
+      return {
+        stdout: Buffer.concat(stdout).toString("utf8"),
+        stderr: Buffer.concat(stderr).toString("utf8"),
+        truncated,
+      };
+    },
+  };
+}
 
 /**
  * Implements one local operating-system sandbox. A backend must reject a profile unless every

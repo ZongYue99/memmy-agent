@@ -2,13 +2,15 @@ import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import type { NormalizedToolCall, SandboxAttempt } from "../../domain/sandbox-attempt.js";
-import type { PermissionProfile } from "../../domain/permission-profile.js";
 import type { SandboxExecutionHandle } from "../../ports/sandbox-executor-port.js";
-import { stablePolicyHash } from "../../policy/policy-hash.js";
-import type {
-  SandboxBackend,
-  SandboxBackendSelectionInput,
-  SandboxBackendSupport,
+import {
+  attemptMatchesCall,
+  commandFromExecCall,
+  createBoundedOutputCapture,
+  profileSupportsRestrictedExec,
+  type SandboxBackend,
+  type SandboxBackendSelectionInput,
+  type SandboxBackendSupport,
 } from "./sandbox-backend.js";
 import { compileLinuxBwrapPolicy } from "./linux-bwrap-policy.js";
 
@@ -32,37 +34,6 @@ export class LinuxBwrapBackendError extends Error {
   constructor(readonly code: "unsupported-profile" | "unsupported-call" | "spawn-failed") {
     super(code);
     this.name = "LinuxBwrapBackendError";
-  }
-}
-
-function commandFromCall(call: NormalizedToolCall): string {
-  if (call.toolName !== "exec") throw new LinuxBwrapBackendError("unsupported-call");
-  const command = call.arguments.command;
-  if (typeof command !== "string" || !command.trim() || command.includes("\0")) {
-    throw new LinuxBwrapBackendError("unsupported-call");
-  }
-  return command;
-}
-
-function profileIsSupported(profile: PermissionProfile): boolean {
-  return (
-    profile.filesystem.kind === "restricted" &&
-    profile.network.mode === "denied" &&
-    profile.process.spawn === "non-interactive" &&
-    (profile.process.maxProcesses === 1 || profile.process.maxProcesses === Number.MAX_SAFE_INTEGER)
-  );
-}
-
-function attemptIsBound(attempt: SandboxAttempt, call: NormalizedToolCall): boolean {
-  try {
-    const { policyHash, ...unhashed } = attempt.permissionProfile;
-    return (
-      attempt.compiledPolicyHash === policyHash &&
-      stablePolicyHash(unhashed) === policyHash &&
-      stablePolicyHash(call) === attempt.argsHash
-    );
-  } catch {
-    return false;
   }
 }
 
@@ -130,35 +101,25 @@ export class LinuxBwrapBackend implements SandboxBackend {
       abortSignal?: AbortSignal;
     }>,
   ): Promise<SandboxExecutionHandle> {
+    const profile = input.attempt.permissionProfile;
     if (
       this.platform !== "linux" ||
       input.attempt.sandboxType !== this.sandboxType ||
-      !profileIsSupported(input.attempt.permissionProfile) ||
-      !attemptIsBound(input.attempt, input.call)
+      !profileSupportsRestrictedExec(profile) ||
+      (profile.process.maxProcesses !== 1 &&
+        profile.process.maxProcesses !== Number.MAX_SAFE_INTEGER) ||
+      !attemptMatchesCall(input.attempt, input.call)
     ) {
       throw new LinuxBwrapBackendError("unsupported-profile");
     }
-    const command = commandFromCall(input.call);
+    const command = commandFromExecCall(input.call);
+    if (!command) throw new LinuxBwrapBackendError("unsupported-call");
     const compiled = compileLinuxBwrapPolicy(
-      input.attempt.permissionProfile,
+      profile,
       input.attempt.sandboxCwd,
       input.attempt.workspaceRoots,
     );
-    let capturedBytes = 0;
-    let outputTruncated = false;
-    const append = (chunk: Buffer) => {
-      const remaining = input.attempt.permissionProfile.process.maxOutputBytes - capturedBytes;
-      if (remaining <= 0) {
-        outputTruncated = true;
-        return Buffer.alloc(0);
-      }
-      const captured = chunk.byteLength > remaining ? chunk.subarray(0, remaining) : chunk;
-      capturedBytes += captured.byteLength;
-      if (captured.byteLength !== chunk.byteLength) outputTruncated = true;
-      return captured;
-    };
-    const stdout: Buffer[] = [];
-    const stderr: Buffer[] = [];
+    const output = createBoundedOutputCapture(profile.process.maxOutputBytes);
     const startedAt = this.now();
     let child: ChildProcess;
     try {
@@ -176,14 +137,8 @@ export class LinuxBwrapBackend implements SandboxBackend {
     } catch {
       throw new LinuxBwrapBackendError("spawn-failed");
     }
-    child.stdout?.on("data", (chunk: Buffer) => {
-      const captured = append(chunk);
-      if (captured.length) stdout.push(captured);
-    });
-    child.stderr?.on("data", (chunk: Buffer) => {
-      const captured = append(chunk);
-      if (captured.length) stderr.push(captured);
-    });
+    child.stdout?.on("data", (chunk: Buffer) => output.append("stdout", chunk));
+    child.stderr?.on("data", (chunk: Buffer) => output.append("stderr", chunk));
     let cancellationReason: string | null = null;
     let terminateTimer: NodeJS.Timeout | undefined;
     let resolveClosed!: () => void;
@@ -210,14 +165,15 @@ export class LinuxBwrapBackend implements SandboxBackend {
         finish({ kind: "cancelled", reason: cancellationReason });
         return;
       }
+      const captured = output.result();
       finish({
         kind: "completed",
         result: {
           exitCode,
           signal,
-          stdoutSummary: Buffer.concat(stdout).toString("utf8"),
-          stderrSummary: Buffer.concat(stderr).toString("utf8"),
-          outputTruncated,
+          stdoutSummary: captured.stdout,
+          stderrSummary: captured.stderr,
+          outputTruncated: captured.truncated,
           startedAt,
           completedAt: this.now(),
           evidenceRefs: [],
@@ -240,7 +196,7 @@ export class LinuxBwrapBackend implements SandboxBackend {
     input.abortSignal?.addEventListener("abort", onAbort, { once: true });
     const runtimeTimer = setTimeout(
       () => void cancel("max-runtime-exceeded"),
-      input.attempt.permissionProfile.process.maxRuntimeMs,
+      profile.process.maxRuntimeMs,
     );
     runtimeTimer.unref?.();
     await new Promise<void>((resolve, reject) => {
