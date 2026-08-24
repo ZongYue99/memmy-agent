@@ -5,7 +5,6 @@ import type { ApprovalChannelPort } from "../../ports/approval-channel-port.js";
 
 export type ApprovalPrompt = Readonly<{
   requestId: string;
-  runtimeCallId: string;
   additionalPermission: ResolvedAccessSet;
   expiresAt: number;
 }>;
@@ -26,7 +25,6 @@ export class CallbackApprovalChannel implements ApprovalChannelPort {
     const result = await this.handler(
       immutableSnapshot({
         requestId: request.requestId,
-        runtimeCallId: request.runtimeCallId,
         additionalPermission: request.additionalPermission,
         expiresAt: request.expiresAt,
       }),

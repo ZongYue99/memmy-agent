@@ -1,4 +1,4 @@
-import type { ChildProcess, SpawnOptions } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
@@ -9,20 +9,15 @@ import {
   attemptMatchesCall,
   commandFromExecCall,
   createBoundedOutputCapture,
-  profileSupportsRestrictedExec,
+  restrictedExecUnsupportedReason,
   type SandboxBackend,
   type SandboxBackendSelectionInput,
   type SandboxBackendSupport,
+  type SpawnProcess,
 } from "./sandbox-backend.js";
 
 const PROTOCOL_VERSION = 1;
 const TERMINATE_GRACE_MS = 1_000;
-
-type SpawnProcess = (
-  command: string,
-  args: readonly string[],
-  options: SpawnOptions,
-) => ChildProcess;
 
 type WindowsNativeHelperBackendOptions = Readonly<{
   platform?: NodeJS.Platform;
@@ -31,19 +26,6 @@ type WindowsNativeHelperBackendOptions = Readonly<{
   spawnProcess?: SpawnProcess;
   now?: () => number;
 }>;
-
-export class WindowsNativeHelperBackendError extends Error {
-  constructor(
-    readonly code:
-      | "unsupported-profile"
-      | "unsupported-call"
-      | "helper-attestation-failed"
-      | "spawn-failed",
-  ) {
-    super(code);
-    this.name = "WindowsNativeHelperBackendError";
-  }
-}
 
 function sha256File(filename: string): string {
   return createHash("sha256").update(fs.readFileSync(filename)).digest("hex");
@@ -119,15 +101,8 @@ export class WindowsNativeHelperBackend implements SandboxBackend {
     if (!this.helperIsAttested()) {
       return { supported: false, reason: "backend-attestation-invalid" };
     }
-    if (input.permissionProfile.filesystem.kind !== "restricted") {
-      return { supported: false, reason: "filesystem-mode-unsupported" };
-    }
-    if (input.permissionProfile.network.mode !== "denied") {
-      return { supported: false, reason: "network-mode-unsupported" };
-    }
-    if (input.permissionProfile.process.spawn !== "non-interactive") {
-      return { supported: false, reason: "process-mode-unsupported" };
-    }
+    const unsupportedReason = restrictedExecUnsupportedReason(input.permissionProfile);
+    if (unsupportedReason) return { supported: false, reason: unsupportedReason };
     if (input.permissionProfile.process.maxProcesses < 1) {
       return { supported: false, reason: "process-limit-unsupported" };
     }
@@ -140,7 +115,6 @@ export class WindowsNativeHelperBackend implements SandboxBackend {
       supported: true,
       target: {
         sandboxType: this.sandboxType,
-        networkContextId: "windows-restricted-network-token",
       },
     };
   }
@@ -156,18 +130,18 @@ export class WindowsNativeHelperBackend implements SandboxBackend {
     if (
       this.platform !== "win32" ||
       input.attempt.sandboxType !== this.sandboxType ||
-      !profileSupportsRestrictedExec(profile) ||
+      restrictedExecUnsupportedReason(profile) !== null ||
       profile.process.maxProcesses < 1 ||
       !attemptMatchesCall(input.attempt, input.call)
     ) {
-      throw new WindowsNativeHelperBackendError("unsupported-profile");
+      throw new Error("unsupported-profile");
     }
     if (!this.helperIsAttested()) {
-      throw new WindowsNativeHelperBackendError("helper-attestation-failed");
+      throw new Error("helper-attestation-failed");
     }
     const cwd = canonicalCwd(input.attempt.sandboxCwd, input.attempt.workspaceRoots);
     const command = commandFromExecCall(input.call);
-    if (!command) throw new WindowsNativeHelperBackendError("unsupported-call");
+    if (!command) throw new Error("unsupported-call");
     const request = `${JSON.stringify({
       protocolVersion: PROTOCOL_VERSION,
       attemptId: input.attempt.attemptId,
@@ -194,11 +168,11 @@ export class WindowsNativeHelperBackend implements SandboxBackend {
         },
       );
     } catch {
-      throw new WindowsNativeHelperBackendError("spawn-failed");
+      throw new Error("spawn-failed");
     }
     if (!child.stdin) {
       terminate(child, "SIGKILL");
-      throw new WindowsNativeHelperBackendError("spawn-failed");
+      throw new Error("spawn-failed");
     }
     child.stdout?.on("data", (chunk: Buffer) => output.append("stdout", chunk));
     child.stderr?.on("data", (chunk: Buffer) => output.append("stderr", chunk));
@@ -243,7 +217,6 @@ export class WindowsNativeHelperBackend implements SandboxBackend {
           outputTruncated: captured.truncated,
           startedAt,
           completedAt: this.now(),
-          evidenceRefs: [],
         },
       });
     });
@@ -268,7 +241,7 @@ export class WindowsNativeHelperBackend implements SandboxBackend {
     runtimeTimer.unref?.();
     await new Promise<void>((resolve, reject) => {
       child.once("spawn", resolve);
-      child.once("error", () => reject(new WindowsNativeHelperBackendError("spawn-failed")));
+      child.once("error", () => reject(new Error("spawn-failed")));
     });
     child.stdin.end(request);
     if (input.abortSignal?.aborted) await cancel("caller-aborted");

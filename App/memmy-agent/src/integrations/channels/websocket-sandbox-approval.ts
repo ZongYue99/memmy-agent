@@ -41,16 +41,7 @@ export class WebSocketSandboxApprovalCoordinator {
       return Promise.resolve("cancelled");
     }
     return new Promise((resolve) => {
-      const finish = (result: ApprovalPromptResult) => {
-        const pending = this.pending.get(input.prompt.requestId);
-        if (!pending) return;
-        this.pending.delete(input.prompt.requestId);
-        clearTimeout(pending.timer);
-        if (pending.abortSignal && pending.onAbort) {
-          pending.abortSignal.removeEventListener("abort", pending.onAbort);
-        }
-        resolve(result);
-      };
+      const finish = (result: ApprovalPromptResult) => this.finish(input.prompt.requestId, result);
       const delay = Math.max(1, input.prompt.expiresAt - this.now());
       const timer = setTimeout(() => finish("cancelled"), delay);
       timer.unref?.();

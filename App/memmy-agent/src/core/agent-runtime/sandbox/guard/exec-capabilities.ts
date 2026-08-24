@@ -3,10 +3,10 @@ import type { ResolvedAccessSet } from "../domain/capability.js";
 import { CapabilityRegistry } from "./capability-registry.js";
 
 function firstString(...values: unknown[]): string | null {
-  for (const value of values) {
-    if (typeof value === "string" && value.trim()) return value;
-  }
-  return null;
+  return (
+    values.find((value): value is string => typeof value === "string" && value.trim().length > 0) ??
+    null
+  );
 }
 
 export function registerExecCapabilities(registry: CapabilityRegistry): void {

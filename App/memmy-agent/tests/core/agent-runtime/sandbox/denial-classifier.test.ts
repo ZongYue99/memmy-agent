@@ -7,7 +7,7 @@ import type {
 } from "../../../../src/core/agent-runtime/sandbox/domain/permission-profile.js";
 import type { SandboxAttempt } from "../../../../src/core/agent-runtime/sandbox/domain/sandbox-attempt.js";
 import type { SandboxedResult } from "../../../../src/core/agent-runtime/sandbox/domain/sandbox-result.js";
-import { DenialClassifier } from "../../../../src/core/agent-runtime/sandbox/guard/denial-classifier.js";
+import { classifyDenial } from "../../../../src/core/agent-runtime/sandbox/guard/denial-classifier.js";
 import {
   attachPolicyHash,
   stablePolicyHash,
@@ -49,7 +49,6 @@ function attempt(): SandboxAttempt {
     sandboxType: "macos-seatbelt",
     sandboxCwd: "/workspace",
     workspaceRoots: ["/workspace"],
-    networkContextId: "local-network-denied",
     createdAt: 50,
   };
 }
@@ -63,7 +62,6 @@ function result(exitCode = 1, stderrSummary = ""): SandboxedResult {
     outputTruncated: false,
     startedAt: 100,
     completedAt: 200,
-    evidenceRefs: [],
   };
 }
 
@@ -85,10 +83,10 @@ const filesystem = {
   deniedRoots: ["/workspace/.env"],
 };
 
-describe("DenialClassifier", () => {
+describe("classifyDenial", () => {
   it("creates confirmed evidence from a matching kernel filesystem denial", () => {
     expect(
-      new DenialClassifier().classify({
+      classifyDenial({
         attempt: attempt(),
         result: result(),
         observations: [observation()],
@@ -104,9 +102,8 @@ describe("DenialClassifier", () => {
   });
 
   it("does not trust stderr keywords or benign platform observations", () => {
-    const classifier = new DenialClassifier();
     expect(
-      classifier.classify({
+      classifyDenial({
         attempt: attempt(),
         result: result(1, "Operation not permitted"),
         observations: [],
@@ -114,7 +111,7 @@ describe("DenialClassifier", () => {
       }),
     ).toBeNull();
     expect(
-      classifier.classify({
+      classifyDenial({
         attempt: attempt(),
         result: result(),
         observations: [
@@ -127,9 +124,8 @@ describe("DenialClassifier", () => {
   });
 
   it("requires a non-zero result and an observation inside its execution window", () => {
-    const classifier = new DenialClassifier();
     expect(
-      classifier.classify({
+      classifyDenial({
         attempt: attempt(),
         result: result(0),
         observations: [observation()],
@@ -137,7 +133,7 @@ describe("DenialClassifier", () => {
       }),
     ).toBeNull();
     expect(
-      classifier.classify({
+      classifyDenial({
         attempt: attempt(),
         result: result(),
         observations: [observation({ observedAt: 10_000 })],

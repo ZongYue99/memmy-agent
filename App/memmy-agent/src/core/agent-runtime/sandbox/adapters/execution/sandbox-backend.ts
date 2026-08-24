@@ -1,3 +1,4 @@
+import type { ChildProcess, SpawnOptions } from "node:child_process";
 import type {
   NormalizedToolCall,
   SandboxAttempt,
@@ -12,19 +13,27 @@ import type {
 
 export type LocalSandboxType = Exclude<SandboxType, "external" | "disabled">;
 
+export type SpawnProcess = (
+  command: string,
+  args: readonly string[],
+  options: SpawnOptions,
+) => ChildProcess;
+
+export type SandboxBackendUnsupportedReason =
+  | "platform-mismatch"
+  | "backend-unavailable"
+  | "backend-attestation-invalid"
+  | "filesystem-mode-unsupported"
+  | "network-mode-unsupported"
+  | "process-mode-unsupported"
+  | "process-limit-unsupported"
+  | "invalid-policy";
+
 export type SandboxBackendSupport =
   | Readonly<{ supported: true; target: SandboxExecutionTarget }>
   | Readonly<{
       supported: false;
-      reason:
-        | "platform-mismatch"
-        | "backend-unavailable"
-        | "backend-attestation-invalid"
-        | "filesystem-mode-unsupported"
-        | "network-mode-unsupported"
-        | "process-mode-unsupported"
-        | "process-limit-unsupported"
-        | "invalid-policy";
+      reason: SandboxBackendUnsupportedReason;
     }>;
 
 export type SandboxBackendSelectionInput = Readonly<{
@@ -56,12 +65,13 @@ export function attemptMatchesCall(attempt: SandboxAttempt, call: NormalizedTool
   }
 }
 
-export function profileSupportsRestrictedExec(profile: PermissionProfile): boolean {
-  return (
-    profile.filesystem.kind === "restricted" &&
-    profile.network.mode === "denied" &&
-    profile.process.spawn === "non-interactive"
-  );
+export function restrictedExecUnsupportedReason(
+  profile: PermissionProfile,
+): SandboxBackendUnsupportedReason | null {
+  if (profile.filesystem.kind !== "restricted") return "filesystem-mode-unsupported";
+  if (profile.network.mode !== "denied") return "network-mode-unsupported";
+  if (profile.process.spawn !== "non-interactive") return "process-mode-unsupported";
+  return null;
 }
 
 export function createBoundedOutputCapture(maxBytes: number) {

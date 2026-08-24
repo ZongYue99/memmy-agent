@@ -48,7 +48,6 @@ describe("local sandbox preflight approval", () => {
       approvalSubjectId: "user-1",
       approvalPrompt: async (prompt) => {
         expect(prompt).toMatchObject({
-          runtimeCallId: "read-external",
           additionalPermission: [
             { kind: "filesystem", access: "read", path: canonicalExternalPath },
           ],

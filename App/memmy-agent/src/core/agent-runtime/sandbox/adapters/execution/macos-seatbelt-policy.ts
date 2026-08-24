@@ -43,22 +43,8 @@ export type CompiledSeatbeltPolicy = Readonly<{
   deniedRoots: readonly string[];
 }>;
 
-export class SeatbeltPolicyError extends Error {
-  constructor(
-    readonly code:
-      | "unsupported-filesystem"
-      | "unsupported-network"
-      | "unsupported-process"
-      | "invalid-path"
-      | "missing-path",
-  ) {
-    super(code);
-    this.name = "SeatbeltPolicyError";
-  }
-}
-
 function canonicalizeEntry(entry: FileSystemEntry): string | null {
-  if (!path.isAbsolute(entry.path)) throw new SeatbeltPolicyError("invalid-path");
+  if (!path.isAbsolute(entry.path)) throw new Error("invalid-path");
   try {
     return fs.realpathSync.native(entry.path);
   } catch (error) {
@@ -68,7 +54,7 @@ function canonicalizeEntry(entry: FileSystemEntry): string | null {
     ) {
       return null;
     }
-    throw new SeatbeltPolicyError("missing-path");
+    throw new Error("missing-path");
   }
 }
 
@@ -100,16 +86,16 @@ function ancestorRules(roots: readonly string[]): string {
 
 export function compileMacosSeatbeltPolicy(profile: PermissionProfile): CompiledSeatbeltPolicy {
   if (profile.filesystem.kind !== "restricted") {
-    throw new SeatbeltPolicyError("unsupported-filesystem");
+    throw new Error("unsupported-filesystem");
   }
   if (profile.network.mode !== "denied") {
-    throw new SeatbeltPolicyError("unsupported-network");
+    throw new Error("unsupported-network");
   }
   if (
     profile.process.spawn !== "non-interactive" ||
     (profile.process.maxProcesses !== 1 && profile.process.maxProcesses !== Number.MAX_SAFE_INTEGER)
   ) {
-    throw new SeatbeltPolicyError("unsupported-process");
+    throw new Error("unsupported-process");
   }
   const roots = {
     read: new Set<string>(),

@@ -25,18 +25,10 @@ import {
   type NormalizedWorkspaceContext,
   type PlannedSandboxAttempt,
 } from "./attempt-planner.js";
-import { RetryController, type RetryIneligibilityReason } from "./retry-controller.js";
-
-export class SandboxManagerError extends Error {
-  constructor(readonly code: "executor-target-unavailable") {
-    super(code);
-    this.name = "SandboxManagerError";
-  }
-}
+import { evaluateRetry, type RetryIneligibilityReason } from "./retry-controller.js";
 
 export type ApprovalRetryDependencies = Readonly<{
   broker: ApprovalBroker;
-  controller?: RetryController;
 }>;
 
 export type SandboxManagerDependencies = Readonly<{
@@ -135,16 +127,12 @@ async function waitForCompletion(
 }
 
 export class SandboxManager {
-  private readonly retryController: RetryController;
-
   constructor(
     private readonly planner: AttemptPlanner,
     private readonly executor: SandboxExecutorPort,
     private readonly clock: ClockPort,
     private readonly dependencies: SandboxManagerDependencies,
-  ) {
-    this.retryController = dependencies.approvalRetry?.controller ?? new RetryController();
-  }
+  ) {}
 
   async runInitialAttempt(
     input: Readonly<{
@@ -166,7 +154,6 @@ export class SandboxManager {
       sandboxType: target.sandboxType,
       sandboxCwd: workspaceContext.sandboxCwd,
       workspaceRoots: workspaceContext.workspaceRoots,
-      networkContextId: target.networkContextId,
     });
     const record = await this.execute(planned, input.abortSignal);
     await this.recordAttemptFinished(record);
@@ -186,7 +173,7 @@ export class SandboxManager {
     }>,
   ): Promise<SandboxExecutionChain> {
     const initial = await this.runInitialAttempt(input);
-    const retryDecision = this.retryController.evaluate(initial, input.authorization);
+    const retryDecision = evaluateRetry(initial, input.authorization);
     if (retryDecision.kind === "not-eligible") {
       return this.chain([initial], { kind: "not-retried", reason: retryDecision.reason });
     }
@@ -260,7 +247,6 @@ export class SandboxManager {
         authorization: retryAuthorization,
         approvalGrant: grant,
         sandboxType: target.sandboxType,
-        networkContextId: target.networkContextId,
       });
     } catch {
       await this.revokeGrant(grant.grantId);
@@ -335,7 +321,7 @@ export class SandboxManager {
         workspaceRoots: workspace.workspaceRoots,
       });
     } catch {
-      throw new SandboxManagerError("executor-target-unavailable");
+      throw new Error("executor-target-unavailable");
     }
   }
 

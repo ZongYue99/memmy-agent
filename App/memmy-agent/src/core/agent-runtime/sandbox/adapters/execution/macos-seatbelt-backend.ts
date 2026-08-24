@@ -1,20 +1,21 @@
-import type { ChildProcess, SpawnOptions } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import type { NormalizedToolCall, SandboxAttempt } from "../../domain/sandbox-attempt.js";
 import type { PermissionProfile } from "../../domain/permission-profile.js";
 import type { SandboxExecutionOutcome } from "../../domain/sandbox-result.js";
-import { DenialClassifier } from "../../guard/denial-classifier.js";
+import { classifyDenial } from "../../guard/denial-classifier.js";
 import type { SandboxExecutionHandle } from "../../ports/sandbox-executor-port.js";
 import {
   attemptMatchesCall,
   commandFromExecCall,
   createBoundedOutputCapture,
-  profileSupportsRestrictedExec,
+  restrictedExecUnsupportedReason,
   type SandboxBackend,
   type SandboxBackendSelectionInput,
   type SandboxBackendSupport,
+  type SpawnProcess,
 } from "./sandbox-backend.js";
 import {
   compileMacosSeatbeltPolicy,
@@ -28,34 +29,20 @@ import {
 const DEFAULT_SEATBELT_EXECUTABLE = "/usr/bin/sandbox-exec";
 const TERMINATE_GRACE_MS = 1_000;
 
-type SpawnProcess = (
-  command: string,
-  args: readonly string[],
-  options: SpawnOptions,
-) => ChildProcess;
-
 type MacosSeatbeltBackendOptions = Readonly<{
   platform?: NodeJS.Platform;
   seatbeltExecutable?: string;
   spawnProcess?: SpawnProcess;
   now?: () => number;
   denialMonitor?: SeatbeltDenialMonitor;
-  denialClassifier?: DenialClassifier;
 }>;
-
-export class MacosSeatbeltBackendError extends Error {
-  constructor(readonly code: "unsupported-profile" | "unsupported-call" | "spawn-failed") {
-    super(code);
-    this.name = "MacosSeatbeltBackendError";
-  }
-}
 
 function buildEnvironment(profile: PermissionProfile): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = {};
   const removed = new Set(profile.environment.remove);
   for (const name of profile.environment.inherit) {
     if (!name || name.includes("=") || name.includes("\0")) {
-      throw new MacosSeatbeltBackendError("unsupported-profile");
+      throw new Error("unsupported-profile");
     }
     if (removed.has(name)) continue;
     const value = process.env[name];
@@ -63,7 +50,7 @@ function buildEnvironment(profile: PermissionProfile): NodeJS.ProcessEnv {
   }
   for (const [name, value] of Object.entries(profile.environment.set)) {
     if (!name || name.includes("=") || name.includes("\0") || value.includes("\0")) {
-      throw new MacosSeatbeltBackendError("unsupported-profile");
+      throw new Error("unsupported-profile");
     }
     if (!removed.has(name)) environment[name] = value;
   }
@@ -103,7 +90,7 @@ function canonicalSandboxCwd(
     }
     return cwd;
   } catch {
-    throw new MacosSeatbeltBackendError("unsupported-profile");
+    throw new Error("unsupported-profile");
   }
 }
 
@@ -114,7 +101,6 @@ export class MacosSeatbeltBackend implements SandboxBackend {
   private readonly spawnProcess: SpawnProcess;
   private readonly now: () => number;
   private readonly denialMonitor: SeatbeltDenialMonitor;
-  private readonly denialClassifier: DenialClassifier;
 
   constructor(options: MacosSeatbeltBackendOptions = {}) {
     this.platform = options.platform ?? process.platform;
@@ -122,7 +108,6 @@ export class MacosSeatbeltBackend implements SandboxBackend {
     this.spawnProcess = options.spawnProcess ?? spawn;
     this.now = options.now ?? Date.now;
     this.denialMonitor = options.denialMonitor ?? new MacosSeatbeltDenialMonitor();
-    this.denialClassifier = options.denialClassifier ?? new DenialClassifier();
   }
 
   inspectSupport(input: SandboxBackendSelectionInput): SandboxBackendSupport {
@@ -133,15 +118,8 @@ export class MacosSeatbeltBackend implements SandboxBackend {
       return { supported: false, reason: "backend-unavailable" };
     }
     const { permissionProfile } = input;
-    if (permissionProfile.filesystem.kind !== "restricted") {
-      return { supported: false, reason: "filesystem-mode-unsupported" };
-    }
-    if (permissionProfile.network.mode !== "denied") {
-      return { supported: false, reason: "network-mode-unsupported" };
-    }
-    if (permissionProfile.process.spawn !== "non-interactive") {
-      return { supported: false, reason: "process-mode-unsupported" };
-    }
+    const unsupportedReason = restrictedExecUnsupportedReason(permissionProfile);
+    if (unsupportedReason) return { supported: false, reason: unsupportedReason };
     if (
       permissionProfile.process.maxProcesses !== 1 &&
       permissionProfile.process.maxProcesses !== Number.MAX_SAFE_INTEGER
@@ -156,7 +134,7 @@ export class MacosSeatbeltBackend implements SandboxBackend {
     }
     return {
       supported: true,
-      target: { sandboxType: this.sandboxType, networkContextId: "local-network-denied" },
+      target: { sandboxType: this.sandboxType },
     };
   }
 
@@ -171,15 +149,15 @@ export class MacosSeatbeltBackend implements SandboxBackend {
     if (
       this.platform !== "darwin" ||
       input.attempt.sandboxType !== this.sandboxType ||
-      !profileSupportsRestrictedExec(profile) ||
+      restrictedExecUnsupportedReason(profile) !== null ||
       (profile.process.maxProcesses !== 1 &&
         profile.process.maxProcesses !== Number.MAX_SAFE_INTEGER) ||
       !attemptMatchesCall(input.attempt, input.call)
     ) {
-      throw new MacosSeatbeltBackendError("unsupported-profile");
+      throw new Error("unsupported-profile");
     }
     const command = commandFromExecCall(input.call);
-    if (!command) throw new MacosSeatbeltBackendError("unsupported-call");
+    if (!command) throw new Error("unsupported-call");
     const compiled = compileMacosSeatbeltPolicy(profile);
     const sandboxCwd = canonicalSandboxCwd(
       input.attempt.sandboxCwd,
@@ -204,7 +182,7 @@ export class MacosSeatbeltBackend implements SandboxBackend {
       });
     } catch {
       await denialCapture?.finish();
-      throw new MacosSeatbeltBackendError("spawn-failed");
+      throw new Error("spawn-failed");
     }
     if (child.pid) denialCapture?.bindProcess(child.pid);
     child.stdout?.on("data", (chunk: Buffer) => output.append("stdout", chunk));
@@ -236,7 +214,7 @@ export class MacosSeatbeltBackend implements SandboxBackend {
       const finalOutcome =
         outcome.kind === "completed"
           ? (() => {
-              const evidence = this.denialClassifier.classify({
+              const evidence = classifyDenial({
                 attempt: input.attempt,
                 result: outcome.result,
                 observations,
@@ -267,7 +245,6 @@ export class MacosSeatbeltBackend implements SandboxBackend {
           outputTruncated: captured.truncated,
           startedAt,
           completedAt: this.now(),
-          evidenceRefs: [],
         },
       });
     });
@@ -296,7 +273,7 @@ export class MacosSeatbeltBackend implements SandboxBackend {
 
     await new Promise<void>((resolve, reject) => {
       child.once("spawn", resolve);
-      child.once("error", () => reject(new MacosSeatbeltBackendError("spawn-failed")));
+      child.once("error", () => reject(new Error("spawn-failed")));
     });
     if (child.pid) denialCapture?.bindProcess(child.pid);
     if (cancellationReason) {

@@ -32,10 +32,8 @@ export type UnhashedApprovalGrant = Readonly<{
   parentAttemptId: string;
   additionalPermission: ResolvedAccessSet;
   subjectId: string;
-  nonceHash: string;
   issuedAt: number;
   expiresAt: number;
-  usage: "single-use";
 }>;
 
 export type ApprovalGrant = UnhashedApprovalGrant &

@@ -20,7 +20,6 @@ describe("normalizeCapabilitySet", () => {
         maxOutputBytes: 0,
       },
       environment: { inherit: [], set: {}, remove: [] },
-      resources: [],
       externalEffects: { maximum: "none" },
     };
 

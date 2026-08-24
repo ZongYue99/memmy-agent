@@ -63,7 +63,6 @@ function attempt(
     sandboxType: "windows-restricted-token",
     sandboxCwd: root,
     workspaceRoots: [root],
-    networkContextId: "windows-restricted-network-token",
     createdAt: 1,
   };
 }
@@ -118,7 +117,6 @@ describe("Windows native sandbox helper backend", () => {
       supported: true,
       target: {
         sandboxType: "windows-restricted-token",
-        networkContextId: "windows-restricted-network-token",
       },
     });
   });
@@ -128,7 +126,7 @@ describe("Windows native sandbox helper backend", () => {
     const { child, request } = fakeChild();
     const spawnProcess = vi.fn<
       (command: string, args: readonly string[], options: SpawnOptions) => ChildProcess
-    >((_command, _args, _options) => {
+    >(() => {
       queueMicrotask(() => child.emit("spawn"));
       return child;
     });

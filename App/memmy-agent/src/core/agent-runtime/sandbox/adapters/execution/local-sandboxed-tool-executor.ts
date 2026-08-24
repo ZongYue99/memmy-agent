@@ -15,10 +15,10 @@ type ApprovalRetryOptions = Readonly<{
 }>;
 
 function firstString(...values: unknown[]): string | null {
-  for (const value of values) {
-    if (typeof value === "string" && value.trim()) return value;
-  }
-  return null;
+  return (
+    values.find((value): value is string => typeof value === "string" && value.trim().length > 0) ??
+    null
+  );
 }
 
 function outputLimit(arguments_: Readonly<Record<string, unknown>>): number {

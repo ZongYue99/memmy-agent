@@ -23,39 +23,40 @@ export type RetryDecision =
     }>;
 
 /** Decides whether a completed Attempt may form one approval-bound retry. */
-export class RetryController {
-  evaluate(record: SandboxExecutionRecord, authorization: EffectiveAuthorization): RetryDecision {
-    const terminal = record.stateHistory.at(-1)?.state;
-    if (terminal?.kind !== "denied") return { kind: "not-eligible", reason: "not-denied" };
-    if (record.attempt.parentAttemptId || record.attempt.approvalGrantHash) {
-      return { kind: "not-eligible", reason: "already-retried" };
-    }
-    if (
-      record.attempt.compiledPolicyHash !== authorization.compiledPolicyHash ||
-      record.attempt.permissionProfile.policyHash !== authorization.compiledPolicyHash
-    ) {
-      return { kind: "not-eligible", reason: "authorization-mismatch" };
-    }
-    if (
-      authorization.approvalMode !== "on-request" ||
-      authorization.entrypoint.approvalChannel === "none"
-    ) {
-      return { kind: "not-eligible", reason: "approval-not-allowed" };
-    }
-    if (!terminal.evidence.minimallySupplementable) {
-      return { kind: "not-eligible", reason: "not-minimally-supplementable" };
-    }
-    const required = terminal.evidence.requiredCapability;
-    if (!required) return { kind: "not-eligible", reason: "missing-required-capability" };
-    if (required.kind !== "filesystem") {
-      return { kind: "not-eligible", reason: "unsupported-capability" };
-    }
-    if (capabilitySetAllows(authorization.baseGrant, required)) {
-      return { kind: "not-eligible", reason: "already-authorized" };
-    }
-    if (!capabilitySetAllows(authorization.policyCap, required)) {
-      return { kind: "not-eligible", reason: "exceeds-policy-cap" };
-    }
-    return immutableSnapshot({ kind: "eligible", additionalPermission: [required] });
+export function evaluateRetry(
+  record: SandboxExecutionRecord,
+  authorization: EffectiveAuthorization,
+): RetryDecision {
+  const terminal = record.stateHistory.at(-1)?.state;
+  if (terminal?.kind !== "denied") return { kind: "not-eligible", reason: "not-denied" };
+  if (record.attempt.parentAttemptId || record.attempt.approvalGrantHash) {
+    return { kind: "not-eligible", reason: "already-retried" };
   }
+  if (
+    record.attempt.compiledPolicyHash !== authorization.compiledPolicyHash ||
+    record.attempt.permissionProfile.policyHash !== authorization.compiledPolicyHash
+  ) {
+    return { kind: "not-eligible", reason: "authorization-mismatch" };
+  }
+  if (
+    authorization.approvalMode !== "on-request" ||
+    authorization.entrypoint.approvalChannel === "none"
+  ) {
+    return { kind: "not-eligible", reason: "approval-not-allowed" };
+  }
+  if (!terminal.evidence.minimallySupplementable) {
+    return { kind: "not-eligible", reason: "not-minimally-supplementable" };
+  }
+  const required = terminal.evidence.requiredCapability;
+  if (!required) return { kind: "not-eligible", reason: "missing-required-capability" };
+  if (required.kind !== "filesystem") {
+    return { kind: "not-eligible", reason: "unsupported-capability" };
+  }
+  if (capabilitySetAllows(authorization.baseGrant, required)) {
+    return { kind: "not-eligible", reason: "already-authorized" };
+  }
+  if (!capabilitySetAllows(authorization.policyCap, required)) {
+    return { kind: "not-eligible", reason: "exceeds-policy-cap" };
+  }
+  return immutableSnapshot({ kind: "eligible", additionalPermission: [required] });
 }

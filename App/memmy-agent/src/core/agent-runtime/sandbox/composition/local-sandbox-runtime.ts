@@ -74,13 +74,10 @@ export function createLocalSandboxRuntime(
       ? "on-request"
       : "never";
   const policyGuard = createLocalToolCallGuard({ ...input, workspaceRoot, approvalMode });
-  const approvalChannel = input.approvalPrompt
-    ? new CallbackApprovalChannel(input.approvalPrompt)
-    : null;
   const approvalBroker =
-    approvalMode === "on-request" && approvalChannel
+    approvalMode === "on-request" && input.approvalPrompt
       ? new ApprovalBroker({
-          channel: approvalChannel,
+          channel: new CallbackApprovalChannel(input.approvalPrompt),
           store: new InMemoryApprovalGrantStore(),
           ids,
           clock,

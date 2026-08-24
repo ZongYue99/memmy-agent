@@ -26,8 +26,6 @@ export type SandboxAttempt = Readonly<{
   sandboxType: SandboxType;
   sandboxCwd: CanonicalPath;
   workspaceRoots: readonly CanonicalPath[];
-  networkContextId: string;
-  resourceLeaseId?: string;
   approvalGrantHash?: string;
   createdAt: number;
 }>;

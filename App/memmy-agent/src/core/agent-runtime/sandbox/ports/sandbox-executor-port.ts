@@ -5,7 +5,6 @@ import type { SandboxExecutionOutcome } from "../domain/sandbox-result.js";
 
 export type SandboxExecutionTarget = Readonly<{
   sandboxType: SandboxType;
-  networkContextId: string;
 }>;
 
 export type SandboxExecutionHandle = Readonly<{

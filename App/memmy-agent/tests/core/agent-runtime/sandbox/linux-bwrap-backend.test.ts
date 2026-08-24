@@ -68,7 +68,6 @@ function attempt(
     sandboxType: "linux-bwrap",
     sandboxCwd: workspace,
     workspaceRoots: [workspace],
-    networkContextId: "linux-network-namespace",
     createdAt: 1,
   };
 }
@@ -131,7 +130,7 @@ describe("Linux Bubblewrap backend", () => {
       }),
     ).toEqual({
       supported: true,
-      target: { sandboxType: "linux-bwrap", networkContextId: "linux-network-namespace" },
+      target: { sandboxType: "linux-bwrap" },
     });
     expect(
       new LinuxBwrapBackend({ platform: "darwin", executable: "/bin/sh" }).inspectSupport({
@@ -181,7 +180,7 @@ describe("Linux Bubblewrap backend", () => {
         attempt: { ...attempt(workspace, profile, call), argsHash: "tampered" },
         call,
       }),
-    ).rejects.toMatchObject({ code: "unsupported-profile" });
+    ).rejects.toThrow("unsupported-profile");
     expect(spawnProcess).toHaveBeenCalledOnce();
   });
 });

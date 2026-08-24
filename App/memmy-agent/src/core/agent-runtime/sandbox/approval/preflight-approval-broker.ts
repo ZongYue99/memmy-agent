@@ -92,7 +92,6 @@ export class PreflightApprovalBroker {
     const result = await this.requestBoundedPrompt(
       immutableSnapshot({
         requestId,
-        runtimeCallId,
         additionalPermission: input.decision.missingCapabilities,
         expiresAt,
       }),

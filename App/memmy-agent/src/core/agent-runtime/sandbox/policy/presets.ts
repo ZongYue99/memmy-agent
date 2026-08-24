@@ -49,7 +49,6 @@ export function createWorkspacePreset(
         "OPENAI_API_KEY",
       ],
     },
-    resources: [],
     externalEffects: { maximum: "none" },
   });
 }

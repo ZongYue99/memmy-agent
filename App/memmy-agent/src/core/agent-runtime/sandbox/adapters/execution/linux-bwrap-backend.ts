@@ -1,4 +1,4 @@
-import type { ChildProcess, SpawnOptions } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import type { NormalizedToolCall, SandboxAttempt } from "../../domain/sandbox-attempt.js";
@@ -7,21 +7,16 @@ import {
   attemptMatchesCall,
   commandFromExecCall,
   createBoundedOutputCapture,
-  profileSupportsRestrictedExec,
+  restrictedExecUnsupportedReason,
   type SandboxBackend,
   type SandboxBackendSelectionInput,
   type SandboxBackendSupport,
+  type SpawnProcess,
 } from "./sandbox-backend.js";
 import { compileLinuxBwrapPolicy } from "./linux-bwrap-policy.js";
 
 const DEFAULT_BWRAP_EXECUTABLE = "/usr/bin/bwrap";
 const TERMINATE_GRACE_MS = 1_000;
-
-type SpawnProcess = (
-  command: string,
-  args: readonly string[],
-  options: SpawnOptions,
-) => ChildProcess;
 
 type LinuxBwrapBackendOptions = Readonly<{
   platform?: NodeJS.Platform;
@@ -29,13 +24,6 @@ type LinuxBwrapBackendOptions = Readonly<{
   spawnProcess?: SpawnProcess;
   now?: () => number;
 }>;
-
-export class LinuxBwrapBackendError extends Error {
-  constructor(readonly code: "unsupported-profile" | "unsupported-call" | "spawn-failed") {
-    super(code);
-    this.name = "LinuxBwrapBackendError";
-  }
-}
 
 function signalProcessTree(child: ChildProcess, signal: NodeJS.Signals): void {
   if (!child.pid) return;
@@ -68,15 +56,8 @@ export class LinuxBwrapBackend implements SandboxBackend {
     } catch {
       return { supported: false, reason: "backend-unavailable" };
     }
-    if (input.permissionProfile.filesystem.kind !== "restricted") {
-      return { supported: false, reason: "filesystem-mode-unsupported" };
-    }
-    if (input.permissionProfile.network.mode !== "denied") {
-      return { supported: false, reason: "network-mode-unsupported" };
-    }
-    if (input.permissionProfile.process.spawn !== "non-interactive") {
-      return { supported: false, reason: "process-mode-unsupported" };
-    }
+    const unsupportedReason = restrictedExecUnsupportedReason(input.permissionProfile);
+    if (unsupportedReason) return { supported: false, reason: unsupportedReason };
     if (
       input.permissionProfile.process.maxProcesses !== 1 &&
       input.permissionProfile.process.maxProcesses !== Number.MAX_SAFE_INTEGER
@@ -90,7 +71,7 @@ export class LinuxBwrapBackend implements SandboxBackend {
     }
     return {
       supported: true,
-      target: { sandboxType: this.sandboxType, networkContextId: "linux-network-namespace" },
+      target: { sandboxType: this.sandboxType },
     };
   }
 
@@ -105,15 +86,15 @@ export class LinuxBwrapBackend implements SandboxBackend {
     if (
       this.platform !== "linux" ||
       input.attempt.sandboxType !== this.sandboxType ||
-      !profileSupportsRestrictedExec(profile) ||
+      restrictedExecUnsupportedReason(profile) !== null ||
       (profile.process.maxProcesses !== 1 &&
         profile.process.maxProcesses !== Number.MAX_SAFE_INTEGER) ||
       !attemptMatchesCall(input.attempt, input.call)
     ) {
-      throw new LinuxBwrapBackendError("unsupported-profile");
+      throw new Error("unsupported-profile");
     }
     const command = commandFromExecCall(input.call);
-    if (!command) throw new LinuxBwrapBackendError("unsupported-call");
+    if (!command) throw new Error("unsupported-call");
     const compiled = compileLinuxBwrapPolicy(
       profile,
       input.attempt.sandboxCwd,
@@ -135,7 +116,7 @@ export class LinuxBwrapBackend implements SandboxBackend {
         },
       );
     } catch {
-      throw new LinuxBwrapBackendError("spawn-failed");
+      throw new Error("spawn-failed");
     }
     child.stdout?.on("data", (chunk: Buffer) => output.append("stdout", chunk));
     child.stderr?.on("data", (chunk: Buffer) => output.append("stderr", chunk));
@@ -176,7 +157,6 @@ export class LinuxBwrapBackend implements SandboxBackend {
           outputTruncated: captured.truncated,
           startedAt,
           completedAt: this.now(),
-          evidenceRefs: [],
         },
       });
     });
@@ -201,7 +181,7 @@ export class LinuxBwrapBackend implements SandboxBackend {
     runtimeTimer.unref?.();
     await new Promise<void>((resolve, reject) => {
       child.once("spawn", resolve);
-      child.once("error", () => reject(new LinuxBwrapBackendError("spawn-failed")));
+      child.once("error", () => reject(new Error("spawn-failed")));
     });
     if (input.abortSignal?.aborted) await cancel("caller-aborted");
     return Object.freeze({ processHandle: `local:${child.pid}`, completion, cancel });

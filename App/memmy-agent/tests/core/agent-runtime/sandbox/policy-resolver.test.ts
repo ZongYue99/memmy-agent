@@ -17,16 +17,6 @@ function capabilities(overrides: Partial<CapabilitySet> = {}): CapabilitySet {
         maxOutputBytes: 1_000_000,
       } as const),
     environment: overrides.environment ?? { inherit: ["PATH", "LANG"], set: {}, remove: [] },
-    resources: overrides.resources ?? [
-      "browser",
-      "stdio-mcp",
-      "http-mcp",
-      "plugin-worker",
-      "memory-writer",
-      "exec-session",
-      "goal",
-      "cron",
-    ],
     externalEffects: overrides.externalEffects ?? { maximum: "irreversible" },
   };
 }
@@ -53,7 +43,6 @@ describe("PolicyResolver", () => {
               { host: "docs.example.com", protocols: ["https"], ports: [443] },
             ],
           },
-          resources: ["browser", "stdio-mcp"],
         }),
       ],
       baseGrants: [
@@ -63,7 +52,6 @@ describe("PolicyResolver", () => {
             mode: "allowlist",
             targets: [{ host: "api.example.com", protocols: ["https"], ports: [443] }],
           },
-          resources: ["browser", "memory-writer"],
         }),
       ],
       entrypoint,

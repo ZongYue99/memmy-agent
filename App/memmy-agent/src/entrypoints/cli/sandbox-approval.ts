@@ -22,8 +22,6 @@ function capabilityLabel(capability: ApprovalPrompt["additionalPermission"][numb
       return capability.interactive ? "Start an interactive process" : "Start a process";
     case "environment":
       return `${capability.operation === "set" ? "Set" : "Inherit"} environment variable ${capability.name}`;
-    case "resource":
-      return `Use ${capability.resource}`;
     case "external-effect":
       return `Perform a ${capability.level} external effect`;
     case "unknown":

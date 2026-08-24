@@ -16,7 +16,6 @@ function capabilities(overrides: Partial<CapabilitySet> = {}): CapabilitySet {
         maxOutputBytes: 1_000_000,
       } as const),
     environment: overrides.environment ?? { inherit: ["PATH"], set: {}, remove: [] },
-    resources: overrides.resources ?? [],
     externalEffects: overrides.externalEffects ?? { maximum: "none" },
   };
 }

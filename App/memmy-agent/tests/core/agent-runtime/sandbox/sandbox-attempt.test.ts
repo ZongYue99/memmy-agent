@@ -21,7 +21,6 @@ describe("sandbox attempt state", () => {
         outputTruncated: false,
         startedAt: 100,
         completedAt: 200,
-        evidenceRefs: [],
       },
     });
 

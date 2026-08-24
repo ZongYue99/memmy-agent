@@ -102,30 +102,28 @@ function nonFileObservation(
 }
 
 /** Converts trusted platform observations into denial evidence without consulting process output. */
-export class DenialClassifier {
-  classify(
-    input: Readonly<{
-      attempt: SandboxAttempt;
-      result: SandboxedResult;
-      observations: readonly DenialObservation[];
-      filesystem: EnforcedFileSystemSnapshot;
-    }>,
-  ): DenialEvidence | null {
-    if (input.result.exitCode === 0 || input.result.exitCode === null) return null;
-    const candidates = input.observations
-      .filter(
-        (observation) =>
-          observation.provenance === "macos-kernel-sandbox-log" &&
-          observation.observedAt >= input.result.startedAt - 100 &&
-          observation.observedAt <= input.result.completedAt + 10,
-      )
-      .map(
-        (observation) =>
-          fileObservation(input.attempt, input.filesystem, observation) ??
-          nonFileObservation(input.attempt, observation),
-      )
-      .filter((candidate): candidate is ClassifiedObservation => candidate !== null)
-      .sort((left, right) => right.priority - left.priority || right.observedAt - left.observedAt);
-    return candidates[0]?.evidence ?? null;
-  }
+export function classifyDenial(
+  input: Readonly<{
+    attempt: SandboxAttempt;
+    result: SandboxedResult;
+    observations: readonly DenialObservation[];
+    filesystem: EnforcedFileSystemSnapshot;
+  }>,
+): DenialEvidence | null {
+  if (input.result.exitCode === 0 || input.result.exitCode === null) return null;
+  const candidates = input.observations
+    .filter(
+      (observation) =>
+        observation.provenance === "macos-kernel-sandbox-log" &&
+        observation.observedAt >= input.result.startedAt - 100 &&
+        observation.observedAt <= input.result.completedAt + 10,
+    )
+    .map(
+      (observation) =>
+        fileObservation(input.attempt, input.filesystem, observation) ??
+        nonFileObservation(input.attempt, observation),
+    )
+    .filter((candidate): candidate is ClassifiedObservation => candidate !== null)
+    .sort((left, right) => right.priority - left.priority || right.observedAt - left.observedAt);
+  return candidates[0]?.evidence ?? null;
 }

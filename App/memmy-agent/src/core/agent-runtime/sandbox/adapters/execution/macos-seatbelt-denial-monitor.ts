@@ -1,6 +1,7 @@
-import type { ChildProcess, SpawnOptions } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { spawn } from "node:child_process";
 import type { DenialObservation } from "../../domain/denial-evidence.js";
+import type { SpawnProcess } from "./sandbox-backend.js";
 
 const LOG_EXECUTABLE = "/usr/bin/log";
 const MAX_LINE_CHARS = 16_384;
@@ -9,12 +10,6 @@ const READY_TIMEOUT_MS = 1_000;
 const DELIVERY_GRACE_MS = 150;
 const DENIAL_DELIVERY_TIMEOUT_MS = 1_500;
 const STOP_TIMEOUT_MS = 500;
-
-type SpawnProcess = (
-  command: string,
-  args: readonly string[],
-  options: SpawnOptions,
-) => ChildProcess;
 
 export interface SeatbeltDenialCapture {
   bindProcess(processId: number): void;

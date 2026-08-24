@@ -2,7 +2,6 @@ import { randomBytes } from "node:crypto";
 import type { ResolvedAccessSet } from "../domain/capability.js";
 import type { ApprovalAuditDecision } from "../domain/audit-event.js";
 import { immutableSnapshot } from "../domain/immutable.js";
-import { stablePolicyHash } from "../policy/policy-hash.js";
 import type { ApprovalChannelPort } from "../ports/approval-channel-port.js";
 import type { ApprovalGrantStorePort } from "../ports/approval-grant-store-port.js";
 import type { AuditPort } from "../ports/audit-port.js";
@@ -165,10 +164,8 @@ export class ApprovalBroker {
       parentAttemptId: input.parentAttemptId,
       additionalPermission: input.additionalPermission,
       subjectId: input.subjectId,
-      nonceHash: stablePolicyHash({ nonce }),
       issuedAt,
       expiresAt,
-      usage: "single-use",
     });
     if (!(await this.options.store.save(grant))) return { kind: "invalid-response" };
     if (

@@ -4,10 +4,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  BackendRegistry,
-  BackendRegistryError,
-} from "../../../../src/core/agent-runtime/sandbox/adapters/execution/backend-registry.js";
+import { BackendRegistry } from "../../../../src/core/agent-runtime/sandbox/adapters/execution/backend-registry.js";
 import { MacosSeatbeltBackend } from "../../../../src/core/agent-runtime/sandbox/adapters/execution/macos-seatbelt-backend.js";
 import { MacosSeatbeltDenialMonitor } from "../../../../src/core/agent-runtime/sandbox/adapters/execution/macos-seatbelt-denial-monitor.js";
 import type {
@@ -79,7 +76,6 @@ function attempt(
     sandboxType: "macos-seatbelt",
     sandboxCwd: workspace,
     workspaceRoots: [workspace],
-    networkContextId: "local-network-denied",
     createdAt: Date.now(),
   };
 }
@@ -146,7 +142,7 @@ runtimeDescribe("macOS Seatbelt runtime", () => {
         sandboxCwd: workspace,
         workspaceRoots: [workspace],
       }),
-    ).toThrow(new BackendRegistryError("no-compatible-backend"));
+    ).toThrow("no-compatible-backend");
   });
 
   it("allows workspace writes and denies explicitly blocked reads and writes", async () => {

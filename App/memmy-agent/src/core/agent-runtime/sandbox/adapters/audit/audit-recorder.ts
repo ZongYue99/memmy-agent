@@ -3,14 +3,7 @@ import type { AuditOutboxPort } from "../../ports/audit-outbox-port.js";
 import type { AuditPort } from "../../ports/audit-port.js";
 import type { ClockPort } from "../../ports/clock-port.js";
 import type { IdGeneratorPort } from "../../ports/id-generator-port.js";
-import { redactAuditDraft } from "./audit-redaction.js";
-
-function containsControlCharacter(value: string): boolean {
-  return [...value].some((character) => {
-    const codePoint = character.codePointAt(0)!;
-    return codePoint <= 0x1f || codePoint === 0x7f;
-  });
-}
+import { containsControlCharacter, redactAuditDraft } from "./audit-redaction.js";
 
 function requireIdentifier(value: string): void {
   if (!value || value.length > 256 || value !== value.trim() || containsControlCharacter(value)) {

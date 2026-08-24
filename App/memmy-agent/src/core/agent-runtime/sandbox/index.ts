@@ -13,12 +13,6 @@ export type {
   ApprovalPromptResult,
 } from "./adapters/approval/callback-approval-channel.js";
 export type { EntrypointSource } from "./policy/entrypoint-classifier.js";
-export { RuntimeResourceGuard } from "./guard/runtime-resource-guard.js";
-export type { ResourceReuseDecision } from "./guard/runtime-resource-guard.js";
-export { EgressGuard } from "./guard/egress-guard.js";
-export { EgressClient, type EgressResponse } from "./adapters/execution/egress-client.js";
-export type { ResourceLease, ResourceLeaseState } from "./domain/resource-lease.js";
-export type { ResourceRuntimePort } from "./ports/resource-runtime-port.js";
 export type {
   ToolCallGuardDecision,
   ToolCallGuardPort,

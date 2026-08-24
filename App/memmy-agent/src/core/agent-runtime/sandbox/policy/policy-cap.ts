@@ -6,7 +6,6 @@ import type {
   NetworkTarget,
   ProcessCapability,
   ResolvedAccess,
-  ResourceKind,
 } from "../domain/capability.js";
 
 const SPAWN_RANK: Record<ProcessCapability["spawn"], number> = {
@@ -133,7 +132,6 @@ export function normalizeCapabilitySet(capability: CapabilitySet): CapabilitySet
       ),
       remove: uniqueSorted(capability.environment.remove),
     },
-    resources: [...new Set(capability.resources)].sort(),
     externalEffects: { ...capability.externalEffects },
   };
 }
@@ -163,7 +161,6 @@ export function intersectCapabilitySets(left: CapabilitySet, right: CapabilitySe
       ),
       remove: uniqueSorted([...left.environment.remove, ...right.environment.remove]),
     },
-    resources: intersectNamedValues(left.resources, right.resources) as ResourceKind[],
     externalEffects: {
       maximum: lowerEffect(left.externalEffects.maximum, right.externalEffects.maximum),
     },
@@ -208,8 +205,6 @@ export function capabilitySetAllows(capability: CapabilitySet, access: ResolvedA
       return access.operation === "inherit"
         ? capability.environment.inherit.includes(access.name)
         : Object.hasOwn(capability.environment.set, access.name);
-    case "resource":
-      return capability.resources.includes(access.resource);
     case "external-effect":
       return EFFECT_RANK[access.level] <= EFFECT_RANK[capability.externalEffects.maximum];
     case "unknown":

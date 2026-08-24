@@ -33,7 +33,6 @@ describe("CallbackApprovalChannel", () => {
     expect(handler).toHaveBeenCalledWith(
       {
         requestId: "request-1",
-        runtimeCallId: "call-1",
         additionalPermission: request.additionalPermission,
         expiresAt: 2_000,
       },

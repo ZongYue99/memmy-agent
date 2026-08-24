@@ -8,7 +8,6 @@ export type SandboxedResult = Readonly<{
   outputTruncated: boolean;
   startedAt: number;
   completedAt: number;
-  evidenceRefs: readonly string[];
 }>;
 
 export type SandboxExecutionOutcome =

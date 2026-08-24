@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { attachApprovalGrantHash } from "../../../../src/core/agent-runtime/sandbox/approval/approval-grant.js";
 import type { SandboxExecutionRecord } from "../../../../src/core/agent-runtime/sandbox/domain/sandbox-attempt.js";
-import { RetryController } from "../../../../src/core/agent-runtime/sandbox/manager/retry-controller.js";
+import { evaluateRetry } from "../../../../src/core/agent-runtime/sandbox/manager/retry-controller.js";
 import { capabilitySetAllows } from "../../../../src/core/agent-runtime/sandbox/policy/policy-cap.js";
 import {
   applyApproval,
@@ -44,10 +44,8 @@ function grant(path: string) {
     parentAttemptId: "attempt-1",
     additionalPermission: [{ kind: "filesystem", access: "read", path }],
     subjectId: "user-1",
-    nonceHash: "nonce-hash",
     issuedAt: 1_000,
     expiresAt: 2_000,
-    usage: "single-use",
   });
 }
 
@@ -72,7 +70,6 @@ function deniedRecord(
       sandboxType: "macos-seatbelt",
       sandboxCwd: "/workspace/project",
       workspaceRoots: ["/workspace/project"],
-      networkContextId: "network-1",
       createdAt: 900,
     },
     stateHistory: [
@@ -122,31 +119,29 @@ describe("approval policy", () => {
   });
 
   it("allows one minimal retry but rejects an Attempt #3 or capability outside policyCap", () => {
-    const controller = new RetryController();
-
-    expect(controller.evaluate(deniedRecord("/workspace/shared.txt"), authorization())).toEqual({
+    expect(evaluateRetry(deniedRecord("/workspace/shared.txt"), authorization())).toEqual({
       kind: "eligible",
       additionalPermission: [{ kind: "filesystem", access: "read", path: "/workspace/shared.txt" }],
     });
     expect(
-      controller.evaluate(
+      evaluateRetry(
         deniedRecord("/workspace/shared.txt", { parentAttemptId: "attempt-0" }),
         authorization(),
       ),
     ).toEqual({ kind: "not-eligible", reason: "already-retried" });
     expect(
-      controller.evaluate(
+      evaluateRetry(
         deniedRecord("/workspace/shared.txt", { approvalGrantHash: "grant-hash" }),
         authorization(),
       ),
     ).toEqual({ kind: "not-eligible", reason: "already-retried" });
-    expect(controller.evaluate(deniedRecord("/outside/secret"), authorization())).toEqual({
+    expect(evaluateRetry(deniedRecord("/outside/secret"), authorization())).toEqual({
       kind: "not-eligible",
       reason: "exceeds-policy-cap",
     });
     const mismatched = deniedRecord("/workspace/shared.txt");
     expect(
-      controller.evaluate(
+      evaluateRetry(
         {
           ...mismatched,
           attempt: { ...mismatched.attempt, compiledPolicyHash: "different-policy" },

@@ -1,15 +1,5 @@
 export type CanonicalPath = string;
 
-export type ResourceKind =
-  | "browser"
-  | "stdio-mcp"
-  | "http-mcp"
-  | "plugin-worker"
-  | "memory-writer"
-  | "exec-session"
-  | "goal"
-  | "cron";
-
 export type FileSystemCapability = Readonly<{
   read: readonly CanonicalPath[];
   write: readonly CanonicalPath[];
@@ -47,7 +37,6 @@ export type CapabilitySet = Readonly<{
   network: NetworkCapability;
   process: ProcessCapability;
   environment: EnvironmentCapability;
-  resources: readonly ResourceKind[];
   externalEffects: Readonly<{ maximum: ExternalEffectLevel }>;
 }>;
 
@@ -61,7 +50,6 @@ export type ResolvedAccess =
     }>
   | Readonly<{ kind: "process"; interactive: boolean; command?: string }>
   | Readonly<{ kind: "environment"; name: string; operation: "inherit" | "set" }>
-  | Readonly<{ kind: "resource"; resource: ResourceKind }>
   | Readonly<{ kind: "external-effect"; level: ExternalEffectLevel }>
   | Readonly<{ kind: "unknown"; name: string }>;
 

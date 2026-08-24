@@ -68,12 +68,10 @@ export class AttemptPlanner {
       sandboxType: SandboxType;
       sandboxCwd: CanonicalPath;
       workspaceRoots: readonly CanonicalPath[];
-      networkContextId: string;
     }>,
   ): PlannedSandboxAttempt {
     requireStableIdentifier("runtimeCallId", input.runtimeCallId);
     requireStableIdentifier("toolName", input.call.toolName);
-    requireStableIdentifier("networkContextId", input.networkContextId);
     assertValidAuthorization(input.authorization);
     const { sandboxCwd, workspaceRoots } = normalizeWorkspaceContext(
       input.sandboxCwd,
@@ -102,7 +100,6 @@ export class AttemptPlanner {
       sandboxType: input.sandboxType,
       sandboxCwd,
       workspaceRoots,
-      networkContextId: input.networkContextId,
       createdAt,
     });
     return deepFreeze({ attempt, call });
@@ -115,7 +112,6 @@ export class AttemptPlanner {
       authorization: EffectiveAuthorization;
       approvalGrant: ApprovalGrant;
       sandboxType: SandboxType;
-      networkContextId: string;
     }>,
   ): PlannedSandboxAttempt {
     if (input.parentAttempt.parentAttemptId || input.parentAttempt.approvalGrantHash) {
@@ -124,7 +120,6 @@ export class AttemptPlanner {
     requireStableIdentifier("parentAttemptId", input.parentAttempt.attemptId);
     requireStableIdentifier("runtimeCallId", input.parentAttempt.runtimeCallId);
     requireStableIdentifier("toolName", input.call.toolName);
-    requireStableIdentifier("networkContextId", input.networkContextId);
     assertValidAuthorization(input.authorization);
     if (!approvalGrantIsValid(input.approvalGrant)) {
       throw new Error("approval grant hash verification failed");
@@ -172,7 +167,6 @@ export class AttemptPlanner {
       sandboxType: input.sandboxType,
       sandboxCwd: input.parentAttempt.sandboxCwd,
       workspaceRoots: input.parentAttempt.workspaceRoots,
-      networkContextId: input.networkContextId,
       approvalGrantHash: input.approvalGrant.approvalGrantHash,
       createdAt,
     });

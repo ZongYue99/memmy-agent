@@ -1,10 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SandboxExecutionOutcome } from "../../../../src/core/agent-runtime/sandbox/domain/sandbox-result.js";
 import { AttemptPlanner } from "../../../../src/core/agent-runtime/sandbox/manager/attempt-planner.js";
-import {
-  SandboxManager,
-  SandboxManagerError,
-} from "../../../../src/core/agent-runtime/sandbox/manager/sandbox-manager.js";
+import { SandboxManager } from "../../../../src/core/agent-runtime/sandbox/manager/sandbox-manager.js";
 import { resolvePolicy } from "../../../../src/core/agent-runtime/sandbox/policy/policy-resolver.js";
 import { createWorkspacePreset } from "../../../../src/core/agent-runtime/sandbox/policy/presets.js";
 import type {
@@ -43,7 +40,6 @@ function completedOutcome(): SandboxExecutionOutcome {
       outputTruncated: false,
       startedAt: 100,
       completedAt: 200,
-      evidenceRefs: [],
     },
   };
 }
@@ -55,7 +51,6 @@ function executor(handle: SandboxExecutionHandle): SandboxExecutorPort & {
   return {
     selectTarget: vi.fn(() => ({
       sandboxType: "macos-seatbelt" as const,
-      networkContextId: "network-1",
     })),
     start: vi.fn(() => handle),
   };
@@ -136,8 +131,8 @@ describe("SandboxManager", () => {
     });
     sandboxExecutor.selectTarget.mockRejectedValue(new Error("secret platform detail"));
 
-    await expect(manager(sandboxExecutor).runInitialAttempt(runInput())).rejects.toEqual(
-      new SandboxManagerError("executor-target-unavailable"),
+    await expect(manager(sandboxExecutor).runInitialAttempt(runInput())).rejects.toThrow(
+      "executor-target-unavailable",
     );
     expect(sandboxExecutor.start).not.toHaveBeenCalled();
   });

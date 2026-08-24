@@ -65,7 +65,6 @@ function completedOutcome(): SandboxExecutionOutcome {
       outputTruncated: false,
       startedAt: 100,
       completedAt: 200,
-      evidenceRefs: [],
     },
   };
 }
@@ -77,7 +76,6 @@ function executor(outcomes: readonly SandboxExecutionOutcome[]) {
     observedCalls,
     selectTarget: vi.fn(() => ({
       sandboxType: "macos-seatbelt" as const,
-      networkContextId: "network-1",
     })),
     start: vi.fn((input: Parameters<SandboxExecutorPort["start"]>[0]) => {
       observedCalls.push(input.call);
@@ -253,11 +251,10 @@ describe("SandboxManager approval retry", () => {
     const sandboxExecutor = executor([deniedOutcome()]);
     sandboxExecutor.selectTarget.mockImplementationOnce(() => ({
       sandboxType: "macos-seatbelt",
-      networkContextId: "network-1",
     }));
     sandboxExecutor.selectTarget.mockImplementationOnce(() => {
       controller.abort();
-      return { sandboxType: "macos-seatbelt", networkContextId: "network-2" };
+      return { sandboxType: "macos-seatbelt" };
     });
     const { manager, store } = harness(sandboxExecutor);
     const consume = vi.spyOn(store, "consume");

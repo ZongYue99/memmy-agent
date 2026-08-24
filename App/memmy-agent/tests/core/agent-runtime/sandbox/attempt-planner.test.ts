@@ -60,7 +60,6 @@ function input(overrides: Record<string, unknown> = {}) {
     sandboxType: "macos-seatbelt" as const,
     sandboxCwd: "/workspace/project",
     workspaceRoots: ["/workspace/project"],
-    networkContextId: "network-1",
     ...overrides,
   };
 }
@@ -76,7 +75,6 @@ describe("AttemptPlanner", () => {
       sandboxType: "macos-seatbelt",
       sandboxCwd: "/workspace/project",
       workspaceRoots: ["/workspace/project"],
-      networkContextId: "network-1",
       createdAt: 1_800_000_000_000,
     });
     expect(planned.attempt).not.toHaveProperty("parentAttemptId");
@@ -138,7 +136,6 @@ describe("AttemptPlanner", () => {
       sandboxType: "macos-seatbelt",
       sandboxCwd: "/workspace/project",
       workspaceRoots: ["/workspace/project"],
-      networkContextId: "network-1",
     });
     const grant = attachApprovalGrantHash({
       grantId: "grant-1",
@@ -150,10 +147,8 @@ describe("AttemptPlanner", () => {
         { kind: "filesystem", access: "read", path: "/workspace/project/shared.txt" },
       ],
       subjectId: "user-1",
-      nonceHash: "nonce-hash",
       issuedAt: 1_000,
       expiresAt: 2_000,
-      usage: "single-use",
     });
     const retryAuthorization = applyApproval(initialAuthorization, grant);
     const retry = retryPlanner.planRetry({
@@ -162,7 +157,6 @@ describe("AttemptPlanner", () => {
       authorization: retryAuthorization,
       approvalGrant: grant,
       sandboxType: "macos-seatbelt",
-      networkContextId: "network-2",
     });
 
     expect(retry.attempt).toMatchObject({
@@ -179,7 +173,6 @@ describe("AttemptPlanner", () => {
         authorization: retryAuthorization,
         approvalGrant: grant,
         sandboxType: "macos-seatbelt",
-        networkContextId: "network-3",
       }),
     ).toThrow("a retry attempt cannot create another retry");
   });
