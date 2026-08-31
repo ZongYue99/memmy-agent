@@ -80,7 +80,7 @@
 > [!TIP]
 > 注册 Memmy 后，即可获得免费 Token，体验完整的 Memory + Agent Runtime。<br>
 > **体验额度：** <br>
-> 注册赠送 Agent 任务体验 Token，当前额度和使用情况以应用内显示为准。<br>
+> 注册赠送200万 Agent 任务体验 Token，当前额度和使用情况以应用内显示为准。<br>
 > 当体验额度用尽后，可切换至 BYOK 模式，使用自己的模型 API。
 
 #### 2. 使用 memmy CLI /TUI

@@ -80,7 +80,7 @@ Download Memmy from the [official website](https://memmy.bot/) or [GitHub Releas
 > [!TIP]
 > Sign up for Memmy to receive free tokens and try the complete Memory + Agent Runtime.<br>
 > **Trial credits:**<br>
-> Registration grants Agent task trial tokens; the current balance and usage are shown in the app.<br>
+> Registration grants 2 million Agent task trial tokens; the current balance and usage are shown in the app.<br>
 > When the trial credits run out, switch to BYOK mode and use your own model API.
 
 #### 2. Use the `memmy` CLI / TUI
