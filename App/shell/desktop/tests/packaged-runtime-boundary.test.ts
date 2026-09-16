@@ -1121,6 +1121,18 @@ describe("desktop packaged runtime boundaries", () => {
     expect(mainSource).toContain('ipcMain.removeHandler("memmy:export-diagnostics-report")');
   });
 
+  it("opens Computer History Markdown through a restricted desktop bridge", () => {
+    const mainSource = readFileSync(mainSourcePath, "utf8");
+    const preloadSource = readFileSync(preloadSourcePath, "utf8");
+
+    expect(preloadSource).toContain("openComputerHistoryMarkdown(filePath: string): Promise<void>;");
+    expect(preloadSource).toContain('ipcRenderer.invoke("memmy:open-computer-history-markdown", filePath)');
+    expect(mainSource).toContain('ipcMain.handle("memmy:open-computer-history-markdown"');
+    expect(mainSource).toContain("resolveComputerHistoryMarkdownPath(rawPath)");
+    expect(mainSource).toContain("await shell.openPath(filePath)");
+    expect(mainSource).toContain('ipcMain.removeHandler("memmy:open-computer-history-markdown")');
+  });
+
   it("exposes app version and update checks through the desktop bridge", () => {
     const mainSource = readFileSync(mainSourcePath, "utf8");
     const preloadSource = readFileSync(preloadSourcePath, "utf8");

@@ -76,13 +76,13 @@ const memoryNavSections: MemoryNavSection[] = [
     titleKey: "memory.nav.work",
     items: [
       { id: "overview", labelKey: "memory.nav.overview", icon: <Layers size={16} /> },
-      { id: "computer-history", labelKey: "memory.nav.computerHistory", icon: <ScrollText size={16} /> },
       { id: "memories", labelKey: "memory.nav.memory", icon: <BrainCircuit size={16} /> },
       { id: "tasks", labelKey: "memory.nav.tasks", icon: <ListChecks size={16} /> },
       { id: "policies", labelKey: "memory.nav.policies", icon: <Sparkles size={16} /> },
       { id: "world-model", labelKey: "memory.nav.worldModel", icon: <Globe2 size={16} /> },
       { id: "skills", labelKey: "memory.nav.skills", icon: <Wand2 size={16} /> },
-      { id: "user-memories", labelKey: "memory.nav.userMemories", icon: <UserRound size={16} /> }
+      { id: "user-memories", labelKey: "memory.nav.userMemories", icon: <UserRound size={16} /> },
+      { id: "computer-history", labelKey: "memory.nav.computerHistory", icon: <ScrollText size={16} /> }
     ]
   },
   {

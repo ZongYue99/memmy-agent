@@ -210,7 +210,7 @@ describe("MCPToolWrapper execution", () => {
       },
     };
 
-    const result = await new MCPToolWrapper(session, "cua", toolDef("get_window_state"), 0.1).execute();
+    const result = await new MCPToolWrapper(session, "sample", toolDef("get_window_state"), 0.1).execute();
     expect(result).toEqual([
       { type: "text", text: "captured" },
       expect.objectContaining({

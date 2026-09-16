@@ -116,6 +116,7 @@ import {
   setWindowsLaunchAtLogin,
   type WindowsLaunchAtLoginEnvironment
 } from "./windows-launch-at-login.js";
+import { resolveComputerHistoryMarkdownPath } from "./computer-history-markdown.js";
 
 let mainWindow: BrowserWindow | null = null;
 let petWindow: BrowserWindow | null = null;
@@ -894,6 +895,10 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle("memmy:openExternal", async (_event, url: string) => {
     await openExternalUrl(url);
+  });
+
+  ipcMain.handle("memmy:open-computer-history-markdown", async (_event, filePath: string) => {
+    await openComputerHistoryMarkdown(filePath);
   });
 
   ipcMain.handle("memmy:openAgentTool", async (_event, sourceId: string, prompt: string) => openAgentTool(sourceId, prompt));
@@ -4999,6 +5004,7 @@ async function cleanupBeforeQuit(): Promise<void> {
   ipcMain.removeHandler("memmy:download-update");
   ipcMain.removeHandler("memmy:open-update-installer");
   ipcMain.removeHandler("memmy:openExternal");
+  ipcMain.removeHandler("memmy:open-computer-history-markdown");
   ipcMain.removeHandler("memmy:openAgentTool");
   ipcMain.removeHandler("memmy:openMailto");
   ipcMain.removeHandler("memmy:copy-image-to-clipboard");
@@ -5442,6 +5448,15 @@ async function openLogsDirectory(): Promise<void> {
   if (openError) {
     throw new Error(openError);
   }
+}
+
+/** Opens a stored Computer History summary in the user's default Markdown application. */
+async function openComputerHistoryMarkdown(rawPath: string): Promise<void> {
+  const filePath = resolveComputerHistoryMarkdownPath(rawPath);
+  const info = await lstat(filePath);
+  if (!info.isFile()) throw new Error("Computer History Markdown is not a regular file");
+  const openError = await shell.openPath(filePath);
+  if (openError) throw new Error(openError);
 }
 
 /**

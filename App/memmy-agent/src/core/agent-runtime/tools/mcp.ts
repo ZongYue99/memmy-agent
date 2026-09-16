@@ -14,9 +14,14 @@ import {
 } from "../../runtime-messages/events.js";
 import { loadConfig, resolveConfigEnvVars } from "../../../config/loader.js";
 import { VERSION } from "../../../version.js";
-import { Tool } from "./base.js";
+import { Tool, type ToolExecutionContext } from "./base.js";
+import { RequestContext, RequestContextStore } from "./context.js";
+import { MacPermissionPreflight, nativePermissionDoctor } from "../../../tools/computer-use/mac-permission-preflight.js";
 import { ToolRegistry } from "./registry.js";
 import { storeToolImageArtifact } from "../../../utils/artifacts.js";
+import { openComputerUseEnvironment, resolveOpenComputerUseCommand } from "../../../tools/computer-use/open-computer-use-binary.js";
+
+import { computerUsePermissionError, macPermissionSettingsGuide } from "../../../tools/computer-use/mac-permission-settings.js";
 
 const TRANSIENT_EXC_NAMES = new Set([
   "ClosedResourceError",
@@ -412,15 +417,18 @@ export async function connectInMemoryMcpServer(server: any): Promise<InMemoryMcp
 export class MCPToolWrapper extends Tool {
   static pluginDiscoverable = false;
   private session: any;
+  private readonly serverName: string;
+  private readonly requestContext = new RequestContextStore();
   originalName: string;
   private toolName: string;
   private toolDescription: string;
   private toolParameters: Record<string, any>;
   private toolTimeout: number;
 
-  constructor(session: any, serverName: string, toolDef: any, toolTimeout = 30) {
+  constructor(session: any, serverName: string, toolDef: any, toolTimeout = 30, private readonly permissionPreflight?: MacPermissionPreflight) {
     super();
     this.session = session;
+    this.serverName = serverName;
     this.originalName = toolDef.name;
     this.toolName = sanitizeName(`mcp_${serverName}_${toolDef.name}`);
     this.toolDescription = toolDef.description || toolDef.name;
@@ -440,7 +448,24 @@ export class MCPToolWrapper extends Tool {
     return this.toolParameters;
   }
 
-  async execute(params: Record<string, any> = {}): Promise<string | Array<Record<string, any>>> {
+  setContext(context: RequestContext): void {
+    this.requestContext.set(context);
+  }
+
+  async execute(params: Record<string, any> = {}, context?: ToolExecutionContext): Promise<string | Array<Record<string, any>>> {
+    if (context?.abortSignal?.aborted) return "(MCP tool call was cancelled)";
+    if (this.permissionPreflight) {
+      const status = await this.permissionPreflight.check(this.requestContext.get());
+      if (status.state !== "granted") {
+        if (status.state === "missing") {
+          await macPermissionSettingsGuide.show("computer-use", status.permission);
+        }
+        return status.state === "missing"
+          ? `Computer Use is waiting for macOS ${status.permission} permission. The requested application operation was not executed. Explain the permission setup to the user and end this turn. Wait for a NEW user message after authorization; do not retry in this turn or use browser/exec/AppleScript as a fallback.`
+          : "Computer Use could not verify its native macOS permissions. The requested application operation was not executed. Explain that the permission check failed and end this turn. Do not use another executor as a fallback; wait for a new user message before retrying.";
+      }
+    }
+    if (context?.abortSignal?.aborted) return "(MCP tool call was cancelled)";
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
         const result: any = await timeoutPromise(
@@ -448,6 +473,16 @@ export class MCPToolWrapper extends Tool {
           this.toolTimeout,
           "timeout",
         );
+        const permission = computerUsePermissionError(this.serverName, result);
+        if (permission) this.permissionPreflight?.deny(this.requestContext.get(), permission);
+        if (permission && await macPermissionSettingsGuide.show("computer-use", permission)) {
+          // Keep the failed result intact. Opening Settings does not grant access
+          // and must never replay a click or text input automatically.
+          result.content = [...(result.content ?? []), {
+            type: "text",
+            text: "macOS System Settings was opened for this permission. Ask the user to enable access for Open Computer Use, then send a NEW message. End this turn without retrying or using another executor. Do not claim permission was granted or the requested action succeeded.",
+          }];
+        }
         return convertMcpToolContent(result, "auto");
       } catch (error) {
         if ((error as Error).message === "timeout") return `(MCP tool call timed out after ${this.toolTimeout}s)`;
@@ -642,11 +677,12 @@ export async function connectMcpServers(
       if (!transport) transport = command ? "stdio" : url?.replace(/\/+$/g, "").endsWith("/sse") ? "sse" : "streamableHttp";
       let read: any;
       let write: any;
+      let permissionPreflight: MacPermissionPreflight | undefined;
       if (transport === "stdio") {
         const [normalizedCommand, args, env] = normalizeWindowsStdioCommand(
-          command,
+          resolveOpenComputerUseCommand(command),
           cfgValue(cfg, "args") ?? [],
-          cfgValue(cfg, "env") ?? null,
+          openComputerUseEnvironment(command, cfgValue(cfg, "env") ?? null),
           cfgValue(cfg, "platform"),
         );
         const params = new runtime.StdioServerParameters({
@@ -655,6 +691,11 @@ export async function connectMcpServers(
           env,
           cwd: cfgValue(cfg, "cwd") ?? null,
         });
+        if (process.platform === "darwin" && name === "open_computer_use") {
+          permissionPreflight = new MacPermissionPreflight(nativePermissionDoctor({
+            command: normalizedCommand, args, env, cwd: cfgValue(cfg, "cwd") ?? null,
+          }));
+        }
         [read, write] = await enterMaybe(runtime.stdioClient(params), closers);
       } else if (transport === "sse" || transport === "streamableHttp") {
         if (!url || !(await probeHttpUrl(url))) continue;
@@ -696,7 +737,7 @@ export async function connectMcpServers(
       for (const toolDef of tools?.tools ?? []) {
         const wrapped = sanitizeName(`mcp_${name}_${toolDef.name}`);
         if (!allowAll && !enabledTools.has(toolDef.name) && !enabledTools.has(wrapped)) continue;
-        registry.register(new MCPToolWrapper(liveSession, name, toolDef, cfgValue(cfg, "tool_timeout", "toolTimeout") ?? 30));
+        registry.register(new MCPToolWrapper(liveSession, name, toolDef, cfgValue(cfg, "tool_timeout", "toolTimeout") ?? 30, permissionPreflight));
         if (enabledTools.has(toolDef.name)) matched.add(toolDef.name);
         if (enabledTools.has(wrapped)) matched.add(wrapped);
       }
@@ -725,6 +766,7 @@ export async function connectMcpServers(
         },
       };
     } catch (error) {
+      console.error(`MCP server '${name}': failed to connect: ${String((error as Error).message ?? error)}`);
       const text = String((error as Error).message ?? error).toLowerCase();
       if (["parse error", "invalid json", "unexpected token", "jsonrpc", "content-length"].some((marker) => text.includes(marker))) {
         console.error(

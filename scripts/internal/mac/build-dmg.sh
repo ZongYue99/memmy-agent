@@ -625,7 +625,12 @@ verify_mac_agent_native_artifacts() {
   local target_cpu="$1"
   local node_pty_dir="$RUNTIME_DIR/memmy-agent/node_modules/openclaw/node_modules/@lydell/node-pty-darwin-$target_cpu/prebuilds/darwin-$target_cpu"
 
+  verify_computer_history_helpers "$RUNTIME_DIR/memmy-agent/dist/tools/computer-history/mac" "$target_cpu"
+
   require_packaged_runtime_file "$RUNTIME_DIR/memmy-agent/node_modules/@memmy/local-api-contracts/dist/index.js"
+  require_packaged_runtime_file "$RUNTIME_DIR/memmy-agent/node_modules/open-computer-use/dist/Open Computer Use.app/Contents/MacOS/OpenComputerUse"
+  node "$ROOT_DIR/scripts/internal/shared/check-open-computer-use.mjs" \
+    "$RUNTIME_DIR/memmy-agent/node_modules/open-computer-use/dist/Open Computer Use.app/Contents/MacOS/OpenComputerUse"
   if [ -L "$RUNTIME_DIR/memmy-agent/node_modules/@memmy/local-api-contracts" ]; then
     echo "Packaged local API contracts must not be a symbolic link." >&2
     exit 1
@@ -633,6 +638,21 @@ verify_mac_agent_native_artifacts() {
   require_packaged_runtime_file "$node_pty_dir/pty.node"
   require_packaged_runtime_file "$node_pty_dir/spawn-helper"
   require_packaged_runtime_glob "$RUNTIME_DIR/memmy-agent/node_modules/openclaw/node_modules/sqlite-vec-darwin-$target_cpu/vec0.*"
+}
+
+verify_computer_history_helpers() {
+  local helper_dir="$1/native/$2"
+  local swift_cpu="$2"
+  local helper
+  if [ "$swift_cpu" = "x64" ]; then swift_cpu=x86_64; fi
+  for helper in human-recorder app-icon; do
+    require_packaged_runtime_file "$helper_dir/$helper"
+    if [ ! -x "$helper_dir/$helper" ]; then
+      echo "Computer History helper is not executable: $helper_dir/$helper" >&2
+      exit 1
+    fi
+    lipo "$helper_dir/$helper" -verify_arch "$swift_cpu"
+  done
 }
 
 resolve_packaged_mac_app_path() {
@@ -655,6 +675,7 @@ verify_packaged_mac_unpacked_artifacts() {
   local packaged_embedding_model="$app_path/Contents/Resources/embedding-models/$EMBEDDING_MODEL_ID"
 
   require_packaged_runtime_file "$app_path/Contents/Resources/app.asar"
+  verify_computer_history_helpers "$unpacked_runtime/memmy-agent/dist/tools/computer-history/mac" "$target_cpu"
   verify_packaged_runtime_config_boundary "$app_path/Contents/Resources"
   require_packaged_runtime_file "$packaged_memory_runtime/package.json"
   require_packaged_runtime_file "$packaged_memory_runtime/package-lock.json"
@@ -669,6 +690,9 @@ verify_packaged_mac_unpacked_artifacts() {
   require_packaged_runtime_glob "$packaged_memory_runtime/node_modules/@img/sharp-libvips-darwin-$target_cpu/lib/libvips*.dylib"
   verify_packaged_memory_runtime_manifest "$packaged_memory_runtime" "$target_cpu"
   require_packaged_runtime_file "$unpacked_runtime/memmy-agent/node_modules/@memmy/migrations/dist/index.js"
+  require_packaged_runtime_file "$unpacked_runtime/memmy-agent/node_modules/open-computer-use/dist/Open Computer Use.app/Contents/MacOS/OpenComputerUse"
+  node "$ROOT_DIR/scripts/internal/shared/check-open-computer-use.mjs" \
+    "$unpacked_runtime/memmy-agent/node_modules/open-computer-use/dist/Open Computer Use.app/Contents/MacOS/OpenComputerUse"
   require_packaged_runtime_file "$packaged_embedding_model/config.json"
   require_packaged_runtime_file "$packaged_embedding_model/tokenizer.json"
   require_packaged_runtime_file "$packaged_embedding_model/onnx/model_quantized.onnx"
@@ -828,6 +852,9 @@ cp -R "$MEMORY_DIR/dist/src" "$RUNTIME_DIR/memory/dist/src"
 cp -R "$MEMORY_DIR/dist/viewer" "$RUNTIME_DIR/memory/dist/viewer"
 cp -R "$MEMORY_DIR/adapters" "$RUNTIME_DIR/memory/adapters"
 cp -R "$AGENT_DIR/dist" "$RUNTIME_DIR/memmy-agent/dist"
+package_step_start "Build Computer History native helpers"
+bash "$ROOT_DIR/scripts/internal/mac/build-computer-history-helpers.sh" \
+  "$RUNTIME_DIR/memmy-agent/dist/tools/computer-history/mac" "$TARGET_CPU"
 package_step_start "Create Memory runtime manifest"
 create_memory_runtime_manifest "$RUNTIME_DIR/memory"
 package_step_start "Resolve Memory runtime lockfile"
