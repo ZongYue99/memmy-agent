@@ -2725,6 +2725,8 @@ export class WebSocketChannel extends BaseChannel {
     if (got === "/api/settings") return this.handleSettings(request);
     if (got === "/api/commands") return this.handleCommands(request);
     if (got === "/api/computer-history") return this.handleComputerHistory(request, "snapshot");
+    if (got === "/api/computer-history/permissions/check") return this.handleComputerHistory(request, "permissions-check");
+    if (got === "/api/computer-history/permissions/open") return this.handleComputerHistory(request, "permissions-open");
     if (got === "/api/computer-history/delete") return this.handleComputerHistory(request, "history-delete");
     if (got === "/api/computer-history/clear") return this.handleComputerHistory(request, "history-clear");
     if (got === "/api/computer-history/pin") return this.handleComputerHistory(request, "history-pin");
@@ -2894,7 +2896,7 @@ export class WebSocketChannel extends BaseChannel {
 
   async handleComputerHistory(
     request: any,
-    action: "snapshot" | "history-delete" | "history-clear" | "history-pin" | "import" | "observation-start" | "observation-pause" | "observation-resume" | "observation-stop" | "workflow-create",
+    action: "snapshot" | "permissions-check" | "permissions-open" | "history-delete" | "history-clear" | "history-pin" | "import" | "observation-start" | "observation-pause" | "observation-resume" | "observation-stop" | "workflow-create",
   ): Promise<HttpLikeResponse> {
     if (!this.checkApiToken(request)) return httpError(401, "Unauthorized");
     const method = (request.method ?? "GET").toUpperCase();
@@ -2928,7 +2930,7 @@ export class WebSocketChannel extends BaseChannel {
           if (body.scope !== "today" && body.scope !== "all") {
             throw new ComputerHistoryApiError(400, "scope must be today or all");
           }
-          snapshot = this.computerHistory.clearHistories(body.scope);
+          snapshot = await this.computerHistory.clearHistories(body.scope);
           break;
         case "history-pin":
           snapshot = this.computerHistory.pinSegment(
@@ -2943,17 +2945,23 @@ export class WebSocketChannel extends BaseChannel {
           });
           break;
         case "observation-start":
-          snapshot = this.computerHistory.startObservation();
+          snapshot = await this.computerHistory.startObservationWithPermissions();
           break;
         case "observation-pause":
           snapshot = await this.computerHistory.pauseObservation();
           break;
         case "observation-resume":
-          snapshot = this.computerHistory.resumeObservation();
+          snapshot = await this.computerHistory.startObservationWithPermissions(true);
           break;
         case "observation-stop":
           snapshot = await this.computerHistory.stopObservation();
           break;
+        case "permissions-check":
+          return httpJsonResponse(await this.computerHistory.checkPermissions());
+        case "permissions-open":
+          if (body.permission !== "accessibility" && body.permission !== "inputMonitoring") return httpError(422, "invalid Computer History permission");
+          if (body.mode !== undefined && body.mode !== "request" && body.mode !== "settings") return httpError(422, "invalid Computer History permission mode");
+          return httpJsonResponse(await this.computerHistory.openPermission(body.permission, body.mode ?? "settings"));
         case "workflow-create":
           snapshot = this.computerHistory.createWorkflow(
             String(body.history_id ?? ""),

@@ -12190,3 +12190,39 @@ input[type="checkbox"].check-sky:checked::after {
     padding-inline: 16px;
   }
 }
+
+/* Share the recording confirmation's shell, type scale and footer. */
+.ch__permission-dialog:focus { outline: none; }
+.ch__permission-dialog .confirm-dialog__footer { padding-top: 12px; }
+.ch__permission-description { margin: 0; }
+.ch__permission-list { display: grid; gap: 4px; margin: 16px 0 8px; }
+.ch__permission-row { display: flex; align-items: center; gap: 12px; min-height: 40px; padding: 4px 0; }
+.ch__permission-row > span:first-child { flex: 1; color: var(--color-text-ink); }
+.ch__permission-granted { display: inline-flex; align-items: center; gap: 6px; color: var(--color-action-sky); }
+.ch__permission-dialog .ch__permission-open {
+  border: none;
+  border-radius: 999px;
+  padding: 6px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  box-shadow: none;
+  background: color-mix(in srgb, var(--color-action-sky) 14%, white);
+  color: var(--color-action-sky);
+}
+.ch__permission-dialog .ch__permission-open:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-action-sky) 22%, white);
+  color: var(--color-action-sky-hover);
+}
+
+.ch__recording-status--quota {
+  background: color-mix(in srgb, var(--color-icon-ember) 12%, var(--color-background-paper));
+  color: color-mix(in srgb, var(--color-icon-ember) 75%, var(--color-text-ink));
+}
+
+.ch__quota-description {
+  margin: 0 0 12px;
+  color: var(--ch-prose);
+  font-size: 13px;
+  line-height: 1.6;
+  text-align: right;
+}

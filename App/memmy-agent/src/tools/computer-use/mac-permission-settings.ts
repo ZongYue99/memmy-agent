@@ -42,10 +42,10 @@ export class MacPermissionSettingsGuide {
     },
   ) {}
 
-  async show(source: "computer-use" | "computer-history", permission: MacPermission): Promise<boolean> {
+  async show(source: "computer-use" | "computer-history", permission: MacPermission, userRequested = false): Promise<boolean> {
     if (this.platform !== "darwin") return false;
     const key = `${source}:${permission}`;
-    const existing = this.pending.get(key);
+    const existing = userRequested ? undefined : this.pending.get(key);
     if (existing) return existing;
     const pending = Promise.resolve()
       .then(() => this.open(`x-apple.systempreferences:com.apple.preference.security?${PANELS[permission]}`))

@@ -14,10 +14,13 @@ import { useTranslation } from "../../i18n/use-translation.js";
 import { MemoryMarkdown } from "./memory-markdown.js";
 import { AppIcon } from "./app-icon.js";
 import { ScrollText, Trash2 } from "./memory-prototype-icons.js";
+import { ComputerHistoryPermissionGuide } from "./computer-history-permission-guide.js";
+import { readHistoryPermissionSetup, saveHistoryPermissionSetup } from "./computer-history-permission-state.js";
 import { ComputerHistoryRecordingConfirmation } from "./computer-history-recording-confirmation.js";
 
 export interface ComputerHistorySubPageProps {
   client: MemmyAgentClient | null;
+  quotaExhausted?: boolean;
 }
 
 interface HistoryDay {
@@ -160,6 +163,7 @@ export function ComputerHistorySubPage(props: ComputerHistorySubPageProps) {
   const { t } = useTranslation();
   const [snapshot, setSnapshot] = useState<ComputerHistorySnapshot | null>(null);
   const [pendingRecordingAction, setPendingRecordingAction] = useState<"start" | "resume" | null>(null);
+  const [permissionSetup, setPermissionSetup] = useState(readHistoryPermissionSetup);
   const [collapsedDays, setCollapsedDays] = useState<Set<string>>(() => new Set());
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [clearMenuOpen, setClearMenuOpen] = useState(false);
@@ -170,6 +174,9 @@ export function ComputerHistorySubPage(props: ComputerHistorySubPageProps) {
   const requestVersion = useRef(0);
   const appliedVersion = useRef(0);
   const actionPending = useRef(false);
+  const recordingSeen = useRef(false);
+  const permissionSetupActive = useRef(!!permissionSetup);
+  permissionSetupActive.current = !!permissionSetup;
 
   const refresh = useCallback(async () => {
     if (!props.client || actionPending.current) return;
@@ -182,6 +189,16 @@ export function ComputerHistorySubPage(props: ComputerHistorySubPageProps) {
       appliedVersion.current = version;
       setSnapshot(next);
       setRefreshError(null);
+      const permission = next.observation.permissions;
+      if (next.observation.state === "running") {
+        recordingSeen.current = true;
+        saveHistoryPermissionSetup(null);
+        setPermissionSetup(null);
+      } else if ((readHistoryPermissionSetup() || recordingSeen.current) && permission?.supported && (!permission.accessibility || !permission.inputMonitoring)) {
+        saveHistoryPermissionSetup("start");
+        setPermissionSetup("start");
+      }
+      return next;
     } catch (cause) {
       if (version < appliedVersion.current) return;
       appliedVersion.current = version;
@@ -225,6 +242,8 @@ export function ComputerHistorySubPage(props: ComputerHistorySubPageProps) {
     ? t("computerHistory.recordingFailed", { error: observationError })
     : observationState === "failed" ? t("computerHistory.recordingFailedUnknown") : null;
   const narrationError = snapshot?.observation.narrationError;
+  const narrationQuotaExhausted = snapshot?.observation.narrationErrorCategory === "quota_exhausted";
+  const quotaExhausted = props.quotaExhausted || narrationQuotaExhausted;
   // The window the recorder is still writing into, paused or not.
   const openEntryId = snapshot?.observation.segmentId ? `${snapshot.observation.segmentId}-10min-summary` : null;
 
@@ -242,8 +261,20 @@ export function ComputerHistorySubPage(props: ComputerHistorySubPageProps) {
       if (version !== requestVersion.current) return;
       setSnapshot(next);
       setRefreshError(null);
+      const permission = next.observation.permissions;
+      if (next.observation.state === "running") {
+        recordingSeen.current = true;
+        saveHistoryPermissionSetup(null);
+        setPermissionSetup(null);
+      } else if ((readHistoryPermissionSetup() || recordingSeen.current) && permission?.supported && (!permission.accessibility || !permission.inputMonitoring)) {
+        saveHistoryPermissionSetup("start");
+        setPermissionSetup("start");
+      }
+      return next;
     } catch (cause) {
       if (version !== requestVersion.current) return;
+      // A genuine start failure must not leave a permission setup intent.
+      if (!permissionSetupActive.current) saveHistoryPermissionSetup(null);
       setError(errorMessage(cause));
     } finally {
       if (version === requestVersion.current) {
@@ -252,6 +283,13 @@ export function ComputerHistorySubPage(props: ComputerHistorySubPageProps) {
       }
     }
   }, [props.client]);
+
+  const startAfterPermissions = useCallback(async () => {
+    const next = await runAction((client) => permissionSetup === "resume" && paused
+      ? client.resumeComputerHistoryObservation()
+      : client.startComputerHistoryObservation());
+    if (!next || next.observation.state !== "running") throw new Error(t("computerHistory.recordingFailedUnknown"));
+  }, [runAction, permissionSetup, paused, t]);
 
   const deleteHistory = useCallback(async (historyId: string) => {
     if (!props.client) return;
@@ -312,7 +350,7 @@ export function ComputerHistorySubPage(props: ComputerHistorySubPageProps) {
               type="button"
               variant="ghost"
               size="sm"
-              disabled={busy || !props.client}
+              disabled={busy || !!permissionSetup || !props.client}
               onClick={() => setPendingRecordingAction("resume")}
             >
               {t("computerHistory.resume")}
@@ -324,7 +362,7 @@ export function ComputerHistorySubPage(props: ComputerHistorySubPageProps) {
             aria-checked={recording || paused}
             aria-labelledby="computer-history-record-label"
             aria-describedby="computer-history-record-description"
-            disabled={busy || !props.client || !snapshot || observationState === "stopping"}
+            disabled={busy || !!permissionSetup || !props.client || !snapshot || observationState === "stopping"}
             className={`ch__recording-switch relative inline-flex shrink-0 h-5 w-9 items-center rounded-full border-0 p-0 cursor-pointer transition-colors ${
               recording || paused ? "bg-action-sky" : "bg-border-stone"
             }`}
@@ -337,6 +375,16 @@ export function ComputerHistorySubPage(props: ComputerHistorySubPageProps) {
         </div>
       </div>
 
+      {permissionSetup && props.client ? <ComputerHistoryPermissionGuide
+        client={props.client}
+        onStart={startAfterPermissions}
+        onCancel={() => {
+          saveHistoryPermissionSetup(null);
+          recordingSeen.current = false;
+          setPermissionSetup(null);
+        }}
+      /> : null}
+
       <div className="ch__head">
         <h4 className="ch__history-title text-sm font-semibold text-text-ink">
           {t("computerHistory.history")}
@@ -345,13 +393,13 @@ export function ComputerHistorySubPage(props: ComputerHistorySubPageProps) {
           </Tooltip>
         </h4>
         <div className="ch__head-actions ch__history-actions">
-          {recording || paused ? (
+          {quotaExhausted || recording || paused ? (
             <span
-              className={`memory-pill ch__recording-status${paused ? "" : " memory-pill--processing"}`}
+              className={`memory-pill ch__recording-status${quotaExhausted ? " ch__recording-status--quota" : paused ? "" : " memory-pill--processing"}`}
               role="status"
             >
               <span className="ch__recording-status-dot" aria-hidden="true" />
-              {t(paused ? "computerHistory.paused" : "computerHistory.recording")}
+              {t(quotaExhausted ? "computerHistory.tokensExhausted" : paused ? "computerHistory.paused" : "computerHistory.recording")}
             </span>
           ) : null}
           <div className="ch__menu" ref={clearMenuRef}>
@@ -387,10 +435,12 @@ export function ComputerHistorySubPage(props: ComputerHistorySubPageProps) {
         </div>
       </div>
 
+      {quotaExhausted ? <p className="ch__quota-description">{t("computerHistory.tokensExhaustedDescription")}</p> : null}
+
       {error ? <div className="ch__error" role="alert">{error}</div> : null}
       {refreshError ? <div className="ch__error" role="alert">{refreshError}</div> : null}
       {recordingError ? <div className="ch__error" role="alert">{recordingError}</div> : null}
-      {narrationError ? (
+      {narrationError && !narrationQuotaExhausted ? (
         <div className="ch__error" role="alert">{t("computerHistory.narrationFailed", { error: narrationError })}</div>
       ) : null}
 
@@ -499,9 +549,12 @@ export function ComputerHistorySubPage(props: ComputerHistorySubPageProps) {
         onConfirm={() => {
           const action = pendingRecordingAction;
           setPendingRecordingAction(null);
-          if (action) void runAction((client) => action === "resume"
-            ? client.resumeComputerHistoryObservation()
-            : client.startComputerHistoryObservation());
+          if (action) {
+            saveHistoryPermissionSetup(action);
+            void runAction((client) => action === "resume"
+              ? client.resumeComputerHistoryObservation()
+              : client.startComputerHistoryObservation());
+          }
         }}
       />
     </section>

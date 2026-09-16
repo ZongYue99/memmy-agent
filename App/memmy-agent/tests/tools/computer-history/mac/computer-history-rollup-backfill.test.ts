@@ -240,7 +240,7 @@ describe("repairing historical six-hour aggregation", () => {
     expect(replacement.coveredHistoryIds).toEqual([second]);
     expect(JSON.stringify(model.mock.calls[1])).not.toContain("DELETED_SOURCE_EVIDENCE");
     expect(JSON.stringify(model.mock.calls[1])).toContain("SURVIVING_SOURCE_EVIDENCE");
-    service.clearHistories("all");
+    await service.clearHistories("all");
     expect(await service.backfillUnwrittenSummaries()).toBe(0);
     expect(service.snapshot().histories).toHaveLength(0);
   });

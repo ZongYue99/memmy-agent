@@ -8,14 +8,15 @@ import type {
   MemmyAgentClient
 } from "../../api/memmy-agent-client.js";
 import { I18nProvider } from "../../i18n/i18n-provider.js";
+import { saveHistoryPermissionSetup, readHistoryPermissionSetup } from "../memory/computer-history-permission-state.js";
 import { ComputerHistorySubPage } from "../memory/computer-history-sub-page.js";
 
 // The page reads its copy from the catalog, so it only renders inside a
 // provider; these assertions read the zh-CN catalog the app defaults to.
-function page(client: MemmyAgentClient) {
+function page(client: MemmyAgentClient, quotaExhausted = false) {
   return (
     <I18nProvider language="zh-CN">
-      <ComputerHistorySubPage client={client} />
+      <ComputerHistorySubPage client={client} quotaExhausted={quotaExhausted} />
     </I18nProvider>
   );
 }
@@ -58,6 +59,98 @@ describe("ComputerHistorySubPage", () => {
     });
     return client;
   };
+
+  it("shows missing permissions as setup, and cancellation survives subsequent polls and actions", async () => {
+    vi.useFakeTimers();
+    const missing = snapshot({ observation: { ...snapshot().observation, permissions: { supported: true, accessibility: false, inputMonitoring: false } } });
+    const client = await renderWith(snapshot(), {
+      startComputerHistoryObservation: vi.fn().mockResolvedValue(missing),
+      getComputerHistory: vi.fn().mockResolvedValue(missing),
+      checkComputerHistoryPermissions: vi.fn().mockResolvedValue(missing.observation.permissions),
+      openComputerHistoryPermission: vi.fn().mockResolvedValue(missing.observation.permissions),
+      clearComputerHistories: vi.fn().mockResolvedValue(missing),
+    });
+    expect(document.querySelector(".ch__permission-dialog")).toBeNull();
+    act(() => container.querySelector<HTMLButtonElement>('[role="switch"]')!.click());
+    await act(async () => confirmationButton()!.click());
+    expect(document.querySelector(".ch__permission-dialog")).not.toBeNull();
+    expect(container.textContent).not.toContain("记录失败");
+    expect(container.querySelector('[role="switch"]')?.getAttribute("aria-checked")).toBe("false");
+    expect(readHistoryPermissionSetup()).toBe("start");
+    await act(async () => document.querySelector<HTMLButtonElement>('.ch__permission-dialog button[aria-label="关闭"]')!.click());
+    await act(async () => vi.advanceTimersByTimeAsync(5000));
+    expect(document.querySelector(".ch__permission-dialog")).toBeNull();
+    expect(readHistoryPermissionSetup()).toBeNull();
+    expect(client.startComputerHistoryObservation).toHaveBeenCalledOnce();
+  });
+
+  it("restores setup after app restart and automatically turns recording on after fresh permission checks", async () => {
+    saveHistoryPermissionSetup("start", "old-process");
+    window.memmy = { getComputerHistoryPermissionSessionId: vi.fn().mockResolvedValue("new-process") } as unknown as NonNullable<Window["memmy"]>;
+    const ready = { supported: true, accessibility: true, inputMonitoring: true };
+    const client = await renderWith(snapshot(), {
+      checkComputerHistoryPermissions: vi.fn().mockResolvedValue(ready),
+      openComputerHistoryPermission: vi.fn(),
+      startComputerHistoryObservation: vi.fn().mockResolvedValue(snapshot({ observation: { ...snapshot().observation, state: "running", permissions: ready } })),
+    });
+    expect(client.checkComputerHistoryPermissions).toHaveBeenCalledOnce();
+    expect(container.querySelector('[role="switch"]')?.getAttribute("aria-checked")).toBe("true");
+    expect(client.startComputerHistoryObservation).toHaveBeenCalledOnce();
+    expect(readHistoryPermissionSetup()).toBeNull();
+    expect(document.querySelector(".ch__permission-dialog")).toBeNull();
+  });
+
+  it("replaces Recording with Tokens exhausted without hiding or stopping existing history, then recovers", async () => {
+    const initial = snapshot({ observation: { ...snapshot().observation, state: "running" } });
+    const client = await renderWith(initial);
+    expect(container.querySelector(".ch__recording-status")?.textContent).toContain("记录中");
+    const historyTitle = container.textContent!.includes("My recording");
+    expect(historyTitle).toBe(true);
+    await act(async () => root.render(page(client, true)));
+    expect(container.querySelector(".ch__recording-status")?.textContent).toBe("Token 已用完");
+    expect(container.querySelector(".ch__recording-status")?.className).not.toContain("memory-pill--processing");
+    expect(container.textContent).toContain("My recording");
+    expect(container.textContent).toContain("You opened Notes and drafted a short entry.");
+    expect(container.querySelector('[role="switch"]')?.getAttribute("aria-checked")).toBe("true");
+    expect(client.stopComputerHistoryObservation).not.toHaveBeenCalled();
+    expect(client.clearComputerHistories).not.toHaveBeenCalled();
+    await act(async () => root.render(page(client, false)));
+    expect(container.querySelector(".ch__recording-status")?.textContent).toBe("记录中");
+    expect(container.textContent).toContain("My recording");
+  });
+
+  it("shows BYOK quota errors without an account balance, retains history, and recovers", async () => {
+    vi.useFakeTimers();
+    const initial = snapshot({ observation: { ...snapshot().observation, state: "running",
+      narrationError: "Insufficient balance", narrationErrorCategory: "quota_exhausted" } });
+    const client = await renderWith(initial);
+    expect(container.querySelector(".ch__recording-status")?.textContent).toBe("Token 已用完");
+    expect(container.querySelector(".ch__quota-description")?.textContent).toBe("暂时无法生成新的历史摘要，已有记录仍可查看。");
+    expect(container.textContent).toContain("My recording");
+    expect(container.textContent).not.toContain("Insufficient balance");
+    expect(client.stopComputerHistoryObservation).not.toHaveBeenCalled();
+    vi.mocked(client.getComputerHistory).mockResolvedValue(snapshot({ observation: { ...snapshot().observation, state: "running" } }));
+    await act(async () => vi.advanceTimersByTimeAsync(1500));
+    expect(container.querySelector(".ch__recording-status")?.textContent).toBe("记录中");
+    expect(container.querySelector(".ch__quota-description")).toBeNull();
+    expect(container.textContent).toContain("My recording");
+  });
+
+  it.each(["429 Too many requests", "Network unavailable", "Invalid API key"])("does not show quota exhaustion for %s", async (narrationError) => {
+    await renderWith(snapshot({ observation: { ...snapshot().observation, state: "running", narrationError } }));
+    expect(container.querySelector(".ch__recording-status")?.textContent).toBe("记录中");
+    expect(container.querySelector(".ch__quota-description")).toBeNull();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(narrationError);
+    expect(container.textContent).toContain("My recording");
+  });
+
+  it.each(["paused", "stopped", "failed"] as const)("shows exhausted quota with history still readable when observation is %s", async (state) => {
+    const client = await renderWith(snapshot({ observation: { ...snapshot().observation, state } }));
+    await act(async () => root.render(page(client, true)));
+    expect(container.querySelector(".ch__recording-status")?.textContent).toBe("Token 已用完");
+    expect(container.textContent).toContain("My recording");
+    expect(container.querySelector('[aria-label="打开 My recording 的完整 Markdown"]')).not.toBeNull();
+  });
 
   it("opens history directly without an introduction or automatic recording on a fresh installation", async () => {
     const client = await renderWith(snapshot());

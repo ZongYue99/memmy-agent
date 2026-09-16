@@ -235,3 +235,116 @@ describe("aligned recording windows", () => {
     expect(resumed.observation.segmentStartedAt).toBe("2026-09-14T00:11:00.000Z");
   });
 });
+
+describe("clearing the active recording", () => {
+  function seedActive() {
+    const snapshot = service.startObservation();
+    const id = snapshot.observation.segmentId!;
+    const events = path.join(root, "recordings", "segments", id, "events.jsonl");
+    const history = path.join(root, "histories", `${id}-10min-summary.md`);
+    const markdown = "---\ntitle: Old activity\nsource_type: captured\nsummary_state: ready\nstatus: incomplete\n---\n\n## Recording summary\n\nOld evidence.\n";
+    fs.writeFileSync(events, "old raw evidence\n");
+    fs.writeFileSync(history, markdown);
+    return { events, history, markdown };
+  }
+
+  it.each(["today", "all"] as const)("clears %s including the visible active entry, after its writer exits", async (scope) => {
+    const { events, history } = seedActive();
+    expect(service.snapshot().histories).toHaveLength(1);
+    const clear = service.clearHistories(scope);
+    expect(state.children[0].signals).toEqual(["SIGTERM"]);
+    expect(state.children).toHaveLength(1);
+    expect(fs.existsSync(history)).toBe(true);
+    fs.appendFileSync(events, "last buffered write\n");
+    state.children[0].exit();
+    const cleared = await clear;
+    expect(cleared.histories).toEqual([]);
+    expect(cleared.observation.state).toBe("running");
+    expect(state.children).toHaveLength(2);
+    expect(fs.existsSync(history)).toBe(false);
+    expect(fs.existsSync(events)).toBe(false);
+    fs.writeFileSync(events, "only new activity\n");
+    expect(fs.readFileSync(events, "utf8")).not.toContain("old raw evidence");
+    expect(service.snapshot().histories).toEqual([]);
+  });
+
+  it("keeps observation paused after clearing a paused segment", async () => {
+    const { history, events } = seedActive();
+    const pause = service.pauseObservation();
+    state.children[0].exit();
+    await pause;
+    const cleared = await service.clearHistories("all");
+    expect(cleared.observation.state).toBe("paused");
+    expect(cleared.histories).toEqual([]);
+    expect(fs.existsSync(events)).toBe(false);
+    expect(fs.existsSync(history)).toBe(false);
+    expect(state.children).toHaveLength(1);
+    service.resumeObservation();
+    expect(state.children).toHaveLength(2);
+  });
+
+  it.each(["stop", "shutdown"] as const)("does not resume capture when %s overlaps a clear", async (action) => {
+    seedActive();
+    const clear = service.clearHistories("all");
+    const stop = action === "stop" ? service.stopObservation() : service.shutdown();
+    state.children[0].exit();
+    await Promise.all([clear, stop]);
+    expect(service.snapshot().observation.state).toBe("stopped");
+    expect(service.snapshot().histories).toEqual([]);
+    expect(state.children).toHaveLength(1);
+  });
+
+  it("invalidates an in-flight summary even when fresh recording reuses the same bucket", async () => {
+    const { events, history, markdown } = seedActive();
+    let finish!: (value: { content: string }) => void;
+    const model = new Promise<{ content: string }>((resolve) => { finish = resolve; });
+    const internals = service as unknown as {
+      llmRuntime: unknown;
+      writeSummaryWith(file: string, window: "10min", events: string): Promise<boolean>;
+    };
+    const chat = vi.fn().mockReturnValueOnce(model).mockResolvedValue({ content: JSON.stringify({
+      title: "Fresh activity", description: "New evidence", body: "New evidence",
+    }) });
+    internals.llmRuntime = () => ({ model: "stub", provider: { chatWithRetry: chat } });
+    const pending = internals.writeSummaryWith(history, "10min", events);
+    const clear = service.clearHistories("all");
+    state.children[0].exit();
+    await clear;
+    // Even identical replacement content cannot let an older response commit.
+    fs.writeFileSync(history, markdown);
+    expect(await internals.writeSummaryWith(history, "10min", events)).toBe(true);
+    expect(fs.readFileSync(history, "utf8")).toContain("Fresh activity");
+    finish({ content: JSON.stringify({ title: "Deleted activity", description: "Old evidence", body: "Old evidence" }) });
+    expect(await pending).toBe(false);
+    expect(fs.readFileSync(history, "utf8")).toContain("Fresh activity");
+    expect(fs.readFileSync(history, "utf8")).not.toContain("Deleted activity");
+  });
+
+  it("clears today's active record while keeping yesterday's history", async () => {
+    const { history, markdown } = seedActive();
+    const yesterday = path.join(root, "histories", "2026-09-11T12-00-00Z-10min-summary.md");
+    fs.writeFileSync(yesterday, markdown);
+    const clear = service.clearHistories("today");
+    state.children[0].exit();
+    const result = await clear;
+    expect(result.histories.map((entry) => entry.filePath)).toEqual([yesterday]);
+    expect(fs.existsSync(history)).toBe(false);
+  });
+
+  it("waits for an in-flight rotation before clearing both windows", async () => {
+    vi.setSystemTime(new Date("2026-09-13T00:09:59Z"));
+    const { history } = seedActive();
+    await vi.advanceTimersByTimeAsync(1000);
+    const clear = service.clearHistories("all");
+    state.children[0].exit();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(state.children).toHaveLength(2);
+    expect(state.children[1].signals).toEqual(["SIGTERM"]);
+    state.children[1].exit();
+    const result = await clear;
+    expect(result.histories).toEqual([]);
+    expect(fs.existsSync(history)).toBe(false);
+    expect(result.observation.state).toBe("running");
+    expect(state.children).toHaveLength(3);
+  });
+});

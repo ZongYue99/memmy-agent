@@ -16,6 +16,7 @@ import type {
 } from "@memmy/desktop-interface";
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification, screen, shell, systemPreferences, Tray, type Event as ElectronEvent, type FileFilter, type IpcMainEvent, type MenuItemConstructorOptions, type Rectangle, type WebContents } from "electron";
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { constants as fsConstants, existsSync, readFileSync } from "node:fs";
 import { access, appendFile, chmod, copyFile, lstat, mkdir, open, readFile, readdir, rename, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -895,6 +896,15 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle("memmy:openExternal", async (_event, url: string) => {
     await openExternalUrl(url);
+  });
+
+  ipcMain.handle("memmy:get-computer-history-permission-session", () => computerHistoryPermissionSessionId);
+
+  ipcMain.handle("memmy:restart-for-computer-history-permissions", () => {
+    if (process.platform !== "darwin") throw new Error("Computer History permissions require macOS");
+    shouldRelaunchAfterQuitCleanup = true;
+    // Let IPC finish, then reuse the normal recording/service shutdown path.
+    setImmediate(() => app.quit());
   });
 
   ipcMain.handle("memmy:open-computer-history-markdown", async (_event, filePath: string) => {
@@ -4784,6 +4794,7 @@ let hasSingleInstanceLock = app.requestSingleInstanceLock();
 let lastSecondInstanceActivateAt = 0;
 let didWaitForSingleInstanceLock = false;
 let hasIgnoredStaleReopenQuit = false;
+const computerHistoryPermissionSessionId = randomUUID();
 let shouldRelaunchAfterQuitCleanup = false;
 const appProcessStartedAt = Date.now();
 
@@ -5005,6 +5016,8 @@ async function cleanupBeforeQuit(): Promise<void> {
   ipcMain.removeHandler("memmy:open-update-installer");
   ipcMain.removeHandler("memmy:openExternal");
   ipcMain.removeHandler("memmy:open-computer-history-markdown");
+  ipcMain.removeHandler("memmy:restart-for-computer-history-permissions");
+  ipcMain.removeHandler("memmy:get-computer-history-permission-session");
   ipcMain.removeHandler("memmy:openAgentTool");
   ipcMain.removeHandler("memmy:openMailto");
   ipcMain.removeHandler("memmy:copy-image-to-clipboard");

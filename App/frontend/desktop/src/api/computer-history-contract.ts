@@ -1,5 +1,13 @@
 import { z } from "zod";
 
+export const ComputerHistoryPermissionsSchema = z.object({
+  supported: z.boolean(),
+  accessibility: z.boolean(),
+  inputMonitoring: z.boolean(),
+}).strict();
+export type ComputerHistoryPermissions = z.infer<typeof ComputerHistoryPermissionsSchema>;
+export type ComputerHistoryPermission = "accessibility" | "inputMonitoring";
+
 // The Computer History snapshot contract.
 //
 // This lives on its own, free of any browser dependency, so the agent that
@@ -53,7 +61,9 @@ export const ComputerHistorySnapshotSchema = z.object({
     segmentId: z.string().nullable(),
     segmentStartedAt: z.string().nullable(),
     error: z.string().nullable(),
-    narrationError: z.string().nullable()
+    narrationError: z.string().nullable(),
+    narrationErrorCategory: z.literal("quota_exhausted").nullable().optional(),
+    permissions: ComputerHistoryPermissionsSchema.optional(),
   }).strict(),
   histories: z.array(ComputerHistoryEntrySchema),
   workflows: z.array(ComputerHistoryWorkflowSchema),

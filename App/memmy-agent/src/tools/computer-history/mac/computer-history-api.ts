@@ -1,4 +1,4 @@
-import { computerHistoryPermissionError, macPermissionSettingsGuide } from "../../computer-use/mac-permission-settings.js";
+import { computerHistoryPermissionError } from "../../computer-use/mac-permission-settings.js";
 import {
   ObservationSettingsStore,
 } from "./settings-store.js";
@@ -14,6 +14,7 @@ import {
   writeSegmentNarrative,
 } from "./summary-writer.js";
 import type { LLMRuntimeResolver } from "../../../utils/llm-runtime.js";
+import { readHistoryPermissions, openHistoryPermission, type HistoryPermissions, type HistoryPermission } from "./permissions.js";
 import {
   alignedId,
   SIX_HOUR_MS,
@@ -86,6 +87,8 @@ export interface ComputerHistorySnapshot {
     error: string | null;
     /** Why the last summary kept its mechanical wording, if it did. */
     narrationError: string | null;
+    narrationErrorCategory?: "quota_exhausted" | null;
+    permissions?: HistoryPermissions;
   };
 
   histories: ComputerHistoryEntry[];
@@ -328,9 +331,13 @@ export class ComputerHistoryDemoService {
     promise: Promise<boolean>;
   }>();
   private narrationError: string | null = null;
+  private narrationErrorCategory: "quota_exhausted" | null = null;
   /** Segments already narrated while still open, so it happens once, not per tick. */
   private readonly narratedOpenSegments = new Set<string>();
   private readonly markdownCache = new Map<string, Map<string, CachedEntry>>();
+  private permissions: HistoryPermissions | undefined;
+  private readonly permissionReader: typeof readHistoryPermissions;
+  private permissionStartVersion = 0;
 
   private get segmentsDirectory(): string {
     return path.join(this.recordingDirectory, SEGMENTS_DIRECTORY_NAME);
@@ -349,6 +356,7 @@ export class ComputerHistoryDemoService {
     recordingDirectory?: string;
     workflowDirectory?: string;
     observationSettingsFile?: string;
+    permissionReader?: typeof readHistoryPermissions;
   } = {}) {
     this.recorderScript = input.recorderScript ?? moduleFile("record-human-history.js");
     this.historyDirectory = path.resolve(input.historyDirectory
@@ -359,6 +367,7 @@ export class ComputerHistoryDemoService {
       ?? path.join(os.homedir(), ".memmy", "computer-history", "workflows"));
     this.observationSettings = new ObservationSettingsStore(input.observationSettingsFile);
     this.applicationIcons = new ApplicationIconReader();
+    this.permissionReader = input.permissionReader ?? readHistoryPermissions;
     this.liveSummaryIntervalMs = boundedInterval(
       process.env.MEMMY_COMPUTER_HISTORY_LIVE_SUMMARY_INTERVAL_MS,
       60_000,
@@ -401,7 +410,10 @@ export class ComputerHistoryDemoService {
 
   /** Supplies the model used to narrate finalized segments. */
   setLlmRuntime(llmRuntime: LLMRuntimeResolver | null): void {
-    if (this.llmRuntime !== llmRuntime) this.backfill = null;
+    if (this.llmRuntime !== llmRuntime) {
+      this.backfill = null;
+      this.setNarrationError(null);
+    }
     this.llmRuntime = llmRuntime;
     if (this.summaryRetryTimer) clearTimeout(this.summaryRetryTimer);
     this.summaryRetryTimer = null;
@@ -411,10 +423,15 @@ export class ComputerHistoryDemoService {
     this.retrySummariesInBackground();
   }
 
+  private setNarrationError(reason: string | null, category?: "quota_exhausted"): void {
+    this.narrationError = reason;
+    this.narrationErrorCategory = category ?? null;
+  }
+
   private retrySummariesInBackground(): void {
     if (!this.llmRuntime || this.shuttingDown) return;
     void this.backfillUnwrittenSummaries().catch((error) => {
-      this.narrationError = error instanceof Error ? error.message : String(error);
+      this.setNarrationError(error instanceof Error ? error.message : String(error));
     }).finally(() => {
       if (!this.llmRuntime || this.shuttingDown || this.summaryRetryTimer) return;
       this.summaryRetryTimer = setTimeout(() => {
@@ -515,6 +532,8 @@ export class ComputerHistoryDemoService {
         segmentStartedAt: this.segment?.startedAt ?? null,
         error: this.observationError,
         narrationError: this.narrationError,
+        narrationErrorCategory: this.narrationErrorCategory,
+        ...(this.permissions ? { permissions: this.permissions } : {}),
       },
       histories: [
         ...this.readMarkdownDirectory(this.historyDirectory).map((entry) => {
@@ -681,12 +700,19 @@ export class ComputerHistoryDemoService {
 
   private failObservation(message: string): void {
     const permission = computerHistoryPermissionError(message);
-    if (permission) void macPermissionSettingsGuide.show("computer-history", permission);
     this.clearLiveSummaryTimer();
     this.clearRotationTimer();
     if (this.segment) this.segment.child = null;
-    this.observationError = message;
-    this.observationState = "failed";
+    if (permission === "accessibility" || permission === "inputMonitoring") {
+      // Permission can be revoked between preflight and the event tap startup.
+      this.permissions = { supported: true, accessibility: !message.includes("Accessibility"), inputMonitoring: !message.includes("Input Monitoring") };
+      this.observationError = null;
+      if (this.segment) void this.finalizeSegment(this.segment);
+      this.completeObservationStop();
+    } else {
+      this.observationError = message;
+      this.observationState = "failed";
+    }
   }
 
   private clearRotationTimer(): void {
@@ -775,7 +801,7 @@ export class ComputerHistoryDemoService {
    */
   private narrateSummary(file: string, window: "10min" | "6h", eventsFile: string | null): void {
     void this.writeSummaryWith(file, window, eventsFile).catch((error) => {
-      this.narrationError = error instanceof Error ? error.message : String(error);
+      this.setNarrationError(error instanceof Error ? error.message : String(error));
     });
   }
 
@@ -860,11 +886,11 @@ export class ComputerHistoryDemoService {
       evidence,
       window,
       priorSummaries: this.priorSummaries(summaryId ?? path.basename(destination, ".md")),
-      onError: (reason) => {
+      onError: (reason, category) => {
         // Narration is best effort, but a silent no-op is indistinguishable
         // from a feature that was never wired, so say why it produced nothing.
         if (!isCurrent()) return;
-        this.narrationError = reason;
+        this.setNarrationError(reason, category);
         console.warn(`[computer-history] summary narration skipped: ${reason}`);
       },
     });
@@ -877,10 +903,10 @@ export class ComputerHistoryDemoService {
       // combine an old response with a file another pass has since rewritten.
       atomicWriteText(destination, applyNarrative(markdown, narrative));
       if (file !== destination) fs.rmSync(file, { force: true });
-      this.narrationError = null;
+      this.setNarrationError(null);
       return true;
     } catch (error) {
-      this.narrationError = error instanceof Error ? error.message : String(error);
+      this.setNarrationError(error instanceof Error ? error.message : String(error));
       return false;
     }
   }
@@ -1083,6 +1109,34 @@ export class ComputerHistoryDemoService {
     return this.snapshot();
   }
 
+  async checkPermissions(): Promise<HistoryPermissions> {
+    const status = await this.permissionReader();
+    this.permissions = status;
+    return status;
+  }
+
+  async openPermission(permission: HistoryPermission, mode: "request" | "settings" = "settings"): Promise<HistoryPermissions> {
+    this.permissions = await openHistoryPermission(permission, mode);
+    return this.permissions;
+  }
+
+  /** Missing consent is an onboarding state, before creating any recording. */
+  async startObservationWithPermissions(resume = false): Promise<ComputerHistorySnapshot> {
+    const version = ++this.permissionStartVersion;
+    const status = await this.checkPermissions();
+    if (version !== this.permissionStartVersion || this.shuttingDown) return this.snapshot();
+    if (!status.supported) throw new ComputerHistoryApiError(400, "Computer History recording requires macOS");
+    if (!status.accessibility || !status.inputMonitoring) {
+      this.observationError = null;
+      if (this.observationState === "failed") {
+        if (this.segment) void this.finalizeSegment(this.segment);
+        this.completeObservationStop();
+      }
+      return this.snapshot();
+    }
+    return resume ? this.resumeObservation() : this.startObservation();
+  }
+
   /**
    * Makes the policy an explicit document before the recorder reads it.
    *
@@ -1170,6 +1224,7 @@ export class ComputerHistoryDemoService {
   }
 
   async stopObservation(): Promise<ComputerHistorySnapshot> {
+    ++this.permissionStartVersion;
     // A stop also waits for an in-flight pause/rotation to release its child.
     // Concurrent stops share that work instead of clearing each other's state.
     const transitioning = this.recorderTransition !== null;
@@ -1197,6 +1252,7 @@ export class ComputerHistoryDemoService {
 
   /** Called when the desktop app exits: recording does not outlive the app. */
   async shutdown(): Promise<void> {
+    ++this.permissionStartVersion;
     this.shuttingDown = true;
     if (this.summaryRetryTimer) clearTimeout(this.summaryRetryTimer);
     this.summaryRetryTimer = null;
@@ -1298,10 +1354,10 @@ export class ComputerHistoryDemoService {
         };
         this.invalidateSummary(historyFile);
         const error = this.writeSegmentSummary(segment, standing && isNarrated(standing) ? staging : historyFile, true);
-        if (error) this.narrationError = error;
+        if (error) this.setNarrationError(error);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-          this.narrationError = error instanceof Error ? error.message : String(error);
+          this.setNarrationError(error instanceof Error ? error.message : String(error));
         }
       }
     }
@@ -1496,43 +1552,77 @@ export class ComputerHistoryDemoService {
     }
   }
 
-  /** Clear the stored collection, including invisible and staged summaries. */
-  clearHistories(scope: "today" | "all"): ComputerHistorySnapshot {
+  /** Clear stored history, cutting the active stream at the deletion boundary. */
+  async clearHistories(scope: "today" | "all"): Promise<ComputerHistorySnapshot> {
     if (scope !== "today" && scope !== "all") throw new ComputerHistoryApiError(400, "scope must be today or all");
+    // A rotation or another clear must finish before selecting the active stream.
+    while (this.recorderTransition) await this.recorderTransition;
     const now = new Date();
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
     const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).getTime();
-    const openId = this.segment ? `${this.segment.id}-10min-summary` : null;
-    const ids = new Set<string>();
     const includes = (id: string, modifiedAt: number) => {
-      if (id === openId) return false;
       if (scope === "all") return true;
       const at = instantFromId(id)?.getTime() ?? modifiedAt;
       return at >= today && at < tomorrow;
     };
-    if (fs.existsSync(this.historyDirectory)) {
-      for (const entry of fs.readdirSync(this.historyDirectory, { withFileTypes: true })) {
-        if (!entry.isFile() || !/\.md(?:\.staging)?$/u.test(entry.name)) continue;
-        const id = entry.name.replace(/\.md(?:\.staging)?$/u, "");
-        if (includes(id, fs.statSync(path.join(this.historyDirectory, entry.name)).mtimeMs)) ids.add(id);
+    const previous = this.segment && includes(`${this.segment.id}-10min-summary`, Date.parse(this.segment.startedAt))
+      ? this.segment : null;
+    await this.trackRecorderTransition(async () => {
+      try {
+        if (previous) {
+          this.clearLiveSummaryTimer();
+          this.clearRotationTimer();
+          this.invalidateSummary(previous.historyFile);
+          // Wait for the native writer to exit before deleting its files. Do not
+          // finalize this segment: the user has asked to discard its evidence.
+          await this.detachRecorder(previous);
+        }
+        const ids = new Set<string>();
+        if (fs.existsSync(this.historyDirectory)) {
+          for (const entry of fs.readdirSync(this.historyDirectory, { withFileTypes: true })) {
+            if (!entry.isFile() || !/\.md(?:\.staging)?$/u.test(entry.name)) continue;
+            const id = entry.name.replace(/\.md(?:\.staging)?$/u, "");
+            if (includes(id, fs.statSync(path.join(this.historyDirectory, entry.name)).mtimeMs)) ids.add(id);
+          }
+        }
+        // A crash can leave raw events before any summary exists.
+        if (fs.existsSync(this.segmentsDirectory)) {
+          for (const entry of fs.readdirSync(this.segmentsDirectory, { withFileTypes: true })) {
+            if (!entry.isDirectory()) continue;
+            const id = `${entry.name}-10min-summary`;
+            if (includes(id, segmentAgeMs(path.join(this.segmentsDirectory, entry.name)))) ids.add(id);
+          }
+        }
+        if (fs.existsSync(this.recordingDirectory)) {
+          for (const entry of fs.readdirSync(this.recordingDirectory, { withFileTypes: true })) {
+            if (!entry.isDirectory() || entry.name === SEGMENTS_DIRECTORY_NAME) continue;
+            if (includes(entry.name, segmentAgeMs(path.join(this.recordingDirectory, entry.name)))) ids.add(entry.name);
+          }
+        }
+        for (const id of ids) this.removeStoredHistory(id);
+        for (const id of ids) this.removeRollupsContaining(id);
+        if (previous) {
+          this.segment = null;
+          this.narratedOpenSegments.delete(previous.id);
+          // Invalidated model responses cannot commit, and must not block the
+          // first summary of fresh activity in the same ten-minute bucket.
+          this.summaryJobs.delete(previous.historyFile);
+          if (previous.stoppedByUser || this.shuttingDown || this.observationState === "stopping") {
+            this.completeObservationStop();
+          } else if (this.observationState === "running" || this.observationState === "paused") {
+            this.segment = this.openSegment();
+            if (this.observationState === "running") {
+              this.spawnRecorder(this.segment);
+              this.startLiveSummaryTimer();
+              this.startRotationTimer();
+            }
+          }
+        }
+      } catch (error) {
+        if (previous) this.failObservation(error instanceof Error ? error.message : String(error));
+        throw error;
       }
-    }
-    // A crash can leave raw events before any summary exists.
-    if (fs.existsSync(this.segmentsDirectory)) {
-      for (const entry of fs.readdirSync(this.segmentsDirectory, { withFileTypes: true })) {
-        if (!entry.isDirectory()) continue;
-        const id = `${entry.name}-10min-summary`;
-        if (includes(id, segmentAgeMs(path.join(this.segmentsDirectory, entry.name)))) ids.add(id);
-      }
-    }
-    if (fs.existsSync(this.recordingDirectory)) {
-      for (const entry of fs.readdirSync(this.recordingDirectory, { withFileTypes: true })) {
-        if (!entry.isDirectory() || entry.name === SEGMENTS_DIRECTORY_NAME) continue;
-        if (includes(entry.name, segmentAgeMs(path.join(this.recordingDirectory, entry.name)))) ids.add(entry.name);
-      }
-    }
-    for (const id of ids) this.removeStoredHistory(id);
-    for (const id of ids) this.removeRollupsContaining(id);
+    });
     return this.snapshot();
   }
 

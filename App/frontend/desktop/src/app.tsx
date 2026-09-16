@@ -35,6 +35,7 @@ import { createAppClients } from "./api/client-types.js";
 import { createEventsConnection } from "./api/events.js";
 import { MemmyAgentRequestError, type MemmyAgentClient } from "./api/memmy-agent-client.js";
 import { getRuntimeConfig } from "./api/runtime-config.js";
+import { readHistoryPermissionSetup } from "./pages/memory/computer-history-permission-state.js";
 import { clearMemoryPanelCache } from "./pages/memory/memory-panel-cache.js";
 import { readLocalNickname } from "./app/nickname.js";
 import {
@@ -191,7 +192,7 @@ function RuntimeApp() {
         const initialPath = resolveLaunchInitialView({
           defaultPath: defaultInitialPath,
           currentRoute,
-          launchRouteOverride,
+          launchRouteOverride: launchRouteOverride ?? (readHistoryPermissionSetup() && launchModeOverride !== "pet" ? "/memory" : null),
           launchModeOverride,
           petIntent
         });

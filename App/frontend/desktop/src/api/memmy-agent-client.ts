@@ -11,6 +11,9 @@ import {
   ApplicationIconSchema,
   ComputerHistorySnapshotSchema,
   ComputerHistoryWorkflowSchema,
+  ComputerHistoryPermissionsSchema,
+  type ComputerHistoryPermission,
+  type ComputerHistoryPermissions,
 } from "./computer-history-contract.js";
 
 export { ComputerHistorySnapshotSchema };
@@ -95,6 +98,8 @@ export type ComputerHistorySnapshot = {
     segmentStartedAt: string | null;
     error: string | null;
     narrationError: string | null;
+    narrationErrorCategory?: "quota_exhausted" | null;
+    permissions?: ComputerHistoryPermissions;
   };
   histories: ComputerHistoryEntry[];
   workflows: ComputerHistoryWorkflow[];
@@ -704,6 +709,8 @@ export interface MemmyAgentClient {
   bootstrap(options?: { force?: boolean }): Promise<MemmyAgentBootstrap>;
   getSettings(): Promise<MemmyAgentSettings>;
   getComputerHistory(): Promise<ComputerHistorySnapshot>;
+  checkComputerHistoryPermissions(): Promise<ComputerHistoryPermissions>;
+  openComputerHistoryPermission(permission: ComputerHistoryPermission, mode?: "request" | "settings"): Promise<ComputerHistoryPermissions>;
   deleteComputerHistory(historyId: string): Promise<ComputerHistorySnapshot>;
   clearComputerHistories(scope: "today" | "all"): Promise<ComputerHistorySnapshot>;
   pinComputerHistory(historyId: string, pinned: boolean): Promise<ComputerHistorySnapshot>;
@@ -1085,6 +1092,14 @@ class HttpMemmyAgentClient implements MemmyAgentClient {
 
   async startComputerHistoryObservation(): Promise<ComputerHistorySnapshot> {
     return this.request("/api/computer-history/observation/start", ComputerHistorySnapshotSchema, { method: "POST", body: {} });
+  }
+
+  async checkComputerHistoryPermissions() {
+    return this.request("/api/computer-history/permissions/check", ComputerHistoryPermissionsSchema, { method: "POST", body: {} });
+  }
+
+  async openComputerHistoryPermission(permission: ComputerHistoryPermission, mode: "request" | "settings" = "settings") {
+    return this.request("/api/computer-history/permissions/open", ComputerHistoryPermissionsSchema, { method: "POST", body: { permission, mode } });
   }
 
   async pauseComputerHistoryObservation(): Promise<ComputerHistorySnapshot> {

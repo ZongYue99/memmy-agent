@@ -102,7 +102,7 @@ export interface NarrativeRequest {
   priorSummaries?: string[];
   modelPreset?: string | null;
   /** Reports why narration produced nothing, so it cannot fail invisibly. */
-  onError?: (reason: string) => void;
+  onError?: (reason: string, category?: "quota_exhausted") => void;
 }
 
 /**
@@ -161,6 +161,14 @@ export async function writeSegmentNarrative(
       retryMode: "standard",
     });
     const text = typeof response?.content === "string" ? response.content : "";
+    if (response?.errorCategory === "quota_exhausted") {
+      request.onError?.(text || "model quota exhausted", "quota_exhausted");
+      return null;
+    }
+    if (response?.finishReason === "error") {
+      request.onError?.(text || "model request failed");
+      return null;
+    }
     if (!text.trim()) {
       request.onError?.("the model returned no content");
       return null;

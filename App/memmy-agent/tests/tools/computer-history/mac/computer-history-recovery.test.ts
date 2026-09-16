@@ -148,7 +148,7 @@ describe("interrupted segment recovery", () => {
     expect(chat).not.toHaveBeenCalled();
     expect(fs.existsSync(segment.historyFile)).toBe(false);
     (service as unknown as { segment: null }).segment = null;
-    service.clearHistories("all");
+    await service.clearHistories("all");
     await service.backfillUnwrittenSummaries();
     expect(service.snapshot().histories).toHaveLength(0);
     expect(fs.existsSync(segment.directory)).toBe(false);

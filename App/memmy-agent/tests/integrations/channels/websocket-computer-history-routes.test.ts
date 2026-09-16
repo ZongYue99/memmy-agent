@@ -6,7 +6,7 @@ import { MessageBus } from "../../../src/core/runtime-messages/index.js";
 import { WebSocketChannel } from "../../../src/integrations/channels/websocket.js";
 import { ComputerHistoryDemoService, type ComputerHistorySnapshot } from "../../../src/tools/computer-history/mac/computer-history-api.js";
 
-const history = vi.hoisted(() => ({ clearHistories: vi.fn(), pinSegment: vi.fn() }));
+const history = vi.hoisted(() => ({ clearHistories: vi.fn(), pinSegment: vi.fn(), checkPermissions: vi.fn(), openPermission: vi.fn(), startObservationWithPermissions: vi.fn() }));
 
 // Keep routing, authentication and clientSnapshot real without constructing a
 // service that can read or remove the user's Computer History files.
@@ -18,6 +18,9 @@ vi.mock("../../../src/tools/computer-history/mac/computer-history-api.js", async
 afterEach(() => {
   history.clearHistories.mockReset();
   history.pinSegment.mockReset();
+  history.checkPermissions.mockReset();
+  history.openPermission.mockReset();
+  history.startObservationWithPermissions.mockReset();
 });
 
 describe("Computer History pin HTTP boundary", () => {
@@ -111,7 +114,7 @@ describe("Computer History clear HTTP route", () => {
 
   it.each(["today", "all"] as const)("clears %s and returns the client snapshot with coverage intact", async (scope) => {
     const serviceSnapshot = snapshot();
-    history.clearHistories.mockReturnValue(serviceSnapshot);
+    history.clearHistories.mockResolvedValue(serviceSnapshot);
     const response = await channel().dispatchHttp({}, request({ body: JSON.stringify({ scope }) }));
     expect(response?.status).toBe(200);
     expect(history.clearHistories).toHaveBeenCalledExactlyOnceWith(scope);
@@ -121,5 +124,46 @@ describe("Computer History clear HTTP route", () => {
     expect(sent.observation).toEqual(serviceSnapshot.observation);
     // Trimming the HTTP payload must not strip the service's in-process body.
     expect(serviceSnapshot.histories[0]?.markdown).toBe("Full history body stays in the service.");
+  });
+});
+
+describe("Computer History permissions HTTP boundary", () => {
+  it.each(["check", "open"])("authenticates permissions/%s before accessing native permissions", async (action) => {
+    const response = await channel().dispatchHttp({}, request({ path: `/api/computer-history/permissions/${action}`, headers: {} }));
+    expect(response?.status).toBe(401);
+    expect(history.checkPermissions).not.toHaveBeenCalled(); expect(history.openPermission).not.toHaveBeenCalled();
+  });
+  it("returns native permission statuses", async () => {
+    const status = { supported: true, accessibility: false, inputMonitoring: true };
+    history.checkPermissions.mockResolvedValue(status);
+    const response = await channel().dispatchHttp({}, request({ path: "/api/computer-history/permissions/check", body: "{}" }));
+    expect(response?.status).toBe(200); expect(JSON.parse(String(response?.body))).toEqual(status);
+  });
+  it.each(["screenRecording", "arbitrary-url", null])("rejects an unsupported permission: %s", async (permission) => {
+    const response = await channel().dispatchHttp({}, request({ path: "/api/computer-history/permissions/open", body: JSON.stringify({ permission }) }));
+    expect(response?.status).toBe(422); expect(history.openPermission).not.toHaveBeenCalled();
+  });
+  it.each(["accessibility", "inputMonitoring"])("opens only the requested %s settings", async (permission) => {
+    history.openPermission.mockResolvedValue({ supported: true, accessibility: false, inputMonitoring: false });
+    const response = await channel().dispatchHttp({}, request({ path: "/api/computer-history/permissions/open", body: JSON.stringify({ permission }) }));
+    expect(response?.status).toBe(200); expect(history.openPermission).toHaveBeenCalledExactlyOnceWith(permission, "settings");
+  });
+  it("dispatches explicit settings navigation separately from native authorization", async () => {
+    history.openPermission.mockResolvedValue({ supported: true, accessibility: false, inputMonitoring: false });
+    const response = await channel().dispatchHttp({}, request({ path: "/api/computer-history/permissions/open", body: JSON.stringify({ permission: "accessibility", mode: "settings" }) }));
+    expect(response?.status).toBe(200);
+    expect(history.openPermission).toHaveBeenCalledExactlyOnceWith("accessibility", "settings");
+  });
+  it("rejects unsupported permission navigation modes", async () => {
+    const response = await channel().dispatchHttp({}, request({ path: "/api/computer-history/permissions/open", body: JSON.stringify({ permission: "accessibility", mode: "both" }) }));
+    expect(response?.status).toBe(422); expect(history.openPermission).not.toHaveBeenCalled();
+  });
+  it.each(["start", "resume"])("routes %s through preflight, returning missing permissions without an error", async (action) => {
+    const result = snapshot(); result.observation.permissions = { supported: true, accessibility: false, inputMonitoring: false };
+    history.startObservationWithPermissions.mockResolvedValue(result);
+    const response = await channel().dispatchHttp({}, request({ path: `/api/computer-history/observation/${action}`, body: "{}" }));
+    expect(response?.status).toBe(200);
+    expect(history.startObservationWithPermissions).toHaveBeenCalledWith(...(action === "resume" ? [true] : []));
+    expect(JSON.parse(String(response?.body)).observation.permissions).toEqual(result.observation.permissions);
   });
 });

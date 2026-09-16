@@ -262,6 +262,20 @@ describe("segment narrative", () => {
     expect(call.retryMode).toBe("standard");
   });
 
+  it.each([
+    ["quota_exhausted", "insufficient_quota", "quota_exhausted"],
+    [null, "429 Too many requests", undefined],
+    [null, "Network unavailable", undefined],
+  ] as const)("preserves a provider error category %s without guessing from its text", async (category, content, expected) => {
+    const onError = vi.fn();
+    const resolver = () => ({ model: "stub", provider: { chatWithRetry: async () => ({
+      content, finishReason: "error", errorCategory: category,
+    }) } as any });
+    expect(await writeSegmentNarrative(resolver, { applications: [], evidence: "e", window: "10min", onError })).toBeNull();
+    expect(onError.mock.calls[0]?.[0]).toBe(content);
+    expect(onError.mock.calls[0]?.[1]).toBe(expected);
+  });
+
   it("reports why it produced nothing instead of failing invisibly", async () => {
     const reasons: string[] = [];
     const record = (reason: string) => reasons.push(reason);
