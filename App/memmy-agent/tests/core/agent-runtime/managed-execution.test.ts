@@ -221,3 +221,21 @@ describe("managed execution outcomes", () => {
     expect(registry.getDefinitions()).toEqual([]);
   });
 });
+
+
+it.each(["allow", "deny"])("native tools require an explicit Host decision: %s", async decision => {
+  vi.stubEnv("AGENT_MANAGED_EXECUTION_REQUIRED", "1");
+  vi.stubGlobal("fetch", vi.fn(async () => Response.json({ decision, native: true, reason: "operator_rejected" })));
+  const execute = vi.fn(async () => "native result");
+  const nativeScope = createManagedExecutionScope({ ...credential, nativeTools: true }, new AbortController().signal);
+  const result = await withManagedExecution(nativeScope, () => new AgentRunner().executeTools(new AgentRunSpec({
+    tools: { execute, get: () => ({ readOnly: true }) } as any
+  }), [new ToolCallRequest({ id: "native", name: "custom_tool", arguments: {} })]));
+  expect(execute).toHaveBeenCalledTimes(decision === "allow" ? 1 : 0);
+  expect(result[0].result).toContain(decision === "allow" ? "native result" : "operator_rejected");
+});
+
+it("legacy managed scopes cannot authorize native execution", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => Response.json({ decision: "allow", native: true })));
+  await expect(withManagedExecution(scope(), () => executeManagedTool("custom_tool", {}))).rejects.toThrow("result is missing");
+});

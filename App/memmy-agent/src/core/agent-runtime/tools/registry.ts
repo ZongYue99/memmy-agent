@@ -30,7 +30,7 @@ export class ToolRegistry {
   }
 
   getDefinitions(): Record<string, any>[] {
-    if (managedExecutionRequired()) return managedToolDefinitions();
+    if (managedExecutionRequired()) return managedToolDefinitions([...this.tools.values()].map(tool => tool.toSchema()));
     if (this.cachedDefinitions) return this.cachedDefinitions;
     const definitions = [...this.tools.values()].map((tool) => tool.toSchema());
     const builtins = definitions.filter((schema) => !ToolRegistry.schemaName(schema).startsWith("mcp_"));

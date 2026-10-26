@@ -2,7 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 
 type ManagedTool = { name: string; description: string; inputSchema: Record<string, unknown> };
-type ManagedExecutionScope = { tools: ManagedTool[]; url: string; token: string; active: boolean; signal: AbortSignal; onEvent?: (event: Record<string, unknown>) => void };
+type ManagedExecutionScope = { nativeTools: boolean; tools: ManagedTool[]; url: string; token: string; active: boolean; signal: AbortSignal; onEvent?: (event: Record<string, unknown>) => void };
 const scopes = new AsyncLocalStorage<ManagedExecutionScope>();
 const fileCalls = new AsyncLocalStorage<string>();
 
@@ -69,7 +69,7 @@ export function authenticateAgentRuntime(request: Request): boolean {
 
 export function createManagedExecutionScope(value: unknown, signal: AbortSignal): ManagedExecutionScope {
   if (!value || typeof value !== "object") throw new Error("Managed runtime approval connection is required");
-  const input = value as { protocol?: unknown; tools?: unknown; url?: unknown; token?: unknown };
+  const input = value as { nativeTools?: unknown; protocol?: unknown; tools?: unknown; url?: unknown; token?: unknown };
   if (input.protocol !== 2 || !Array.isArray(input.tools) || !input.tools.length || input.tools.some(tool =>
     !tool || typeof tool.name !== "string" || typeof tool.description !== "string" || !tool.inputSchema || typeof tool.inputSchema !== "object")) {
     throw new Error("Managed execution protocol 2 and tool definitions are required");
@@ -82,13 +82,15 @@ export function createManagedExecutionScope(value: unknown, signal: AbortSignal)
     || url.pathname !== "/authorize" || url.username || url.password || url.search || url.hash) {
     throw new Error("Managed runtime approval connection must be local");
   }
-  return { url: url.href, token: input.token, tools: structuredClone(input.tools), active: true, signal };
+  return { nativeTools: input.nativeTools === true, url: url.href, token: input.token, tools: structuredClone(input.tools), active: true, signal };
 }
 
-export function managedToolDefinitions(): Record<string, unknown>[] {
+export function managedToolDefinitions(native: Record<string, any>[] = []): Record<string, unknown>[] {
   const scope = scopes.getStore();
   if (!scope?.active || scope.signal.aborted) return [];
-  return scope.tools.map(tool => ({ type: "function", function: { name: tool.name, description: tool.description, parameters: tool.inputSchema } }));
+  const managed = scope.tools.map(tool => ({ type: "function", function: { name: tool.name, description: tool.description, parameters: tool.inputSchema } }));
+  const names = new Set(scope.tools.map(tool => tool.name));
+  return [...managed, ...(scope.nativeTools ? native.filter(tool => !names.has(tool.function?.name ?? tool.name)) : [])];
 }
 
 export class ManagedExecutionError extends Error {
@@ -122,7 +124,7 @@ export async function executeManagedTool(name: string, args: unknown, signal?: A
     signal: AbortSignal.any([scope.signal, ...(signal ? [signal] : []), AbortSignal.timeout(["web_fetch", "web_search"].includes(name) ? 815_000 : 125_000)])
   });
   if (!response.ok) throw new Error("Managed runtime approval service is unavailable");
-  const result = await response.json() as { decision?: string; reason?: string; result?: unknown; error?: { kind?: unknown; code?: unknown } };
+  const result = await response.json() as { native?: boolean; decision?: string; reason?: string; result?: unknown; error?: { kind?: unknown; code?: unknown } };
   if (!scope.active || scope.signal.aborted || signal?.aborted) throw new Error("Managed runtime run has ended");
   if (result.error && ["permission", "execution"].includes(String(result.error.kind))
     && typeof result.error.code === "string" && /^[a-zA-Z][a-zA-Z0-9_]{0,79}$/u.test(result.error.code)) {
@@ -135,6 +137,7 @@ export async function executeManagedTool(name: string, args: unknown, signal?: A
     }
     throw new Error(message);
   }
+  if (result.native === true && scope.nativeTools && result.result === undefined) return { args: approvedArgs };
   if (typeof result.result !== "string") throw new Error("Managed runtime execution result is missing");
   return { args: approvedArgs, ...(typeof result.result === "string" ? { result: result.result } : {}) };
 }

@@ -1080,7 +1080,8 @@ export class AgentRunner {
     if (managedExecutionRequired()) {
       try {
         const authorized = await executeManagedTool(call.name, call.arguments, spec.abortSignal, call.id);
-        return { call, result: authorized.result, event: { name: call.name, status: "ok" } };
+        if (authorized.result !== undefined) return { call, result: authorized.result, event: { name: call.name, status: "ok" } };
+        call.arguments = authorized.args as Record<string, unknown>;
       } catch (error) {
         const message = error instanceof Error ? error.message : "Managed runtime execution failed";
         return { call, result: `Error: ${message}`, event: { name: call.name, status: "error", detail: message,
